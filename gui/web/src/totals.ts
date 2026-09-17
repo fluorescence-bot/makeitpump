@@ -9,9 +9,8 @@ export interface Totals {
 
 /**
  * Compute total input, output, and time for a block sequence with repeat.
- *
- * Note: totalIn and totalOut are NOT multiplied by repeat; totalTime IS.
- * This asymmetry matches the current UI behavior (preserved for compatibility).
+ * A run executes the whole block sequence `repeat` times, so totalIn,
+ * totalOut and totalTime all scale with repeat.
  */
 export function computeTotals(blocks: Block[], repeat: number): Totals {
   let totalIn = 0;
@@ -37,15 +36,14 @@ export function computeTotals(blocks: Block[], repeat: number): Totals {
     }
   });
 
-  // Multiply total time by repeat (but NOT totalIn/totalOut)
   const totalTimeWithRepeat = totalTime * repeat;
   const minutes = Math.floor(totalTimeWithRepeat / 60);
   const seconds = Math.round(totalTimeWithRepeat % 60);
   const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
 
   return {
-    totalIn,
-    totalOut,
+    totalIn: totalIn * repeat,
+    totalOut: totalOut * repeat,
     totalTime: totalTimeWithRepeat,
     timeStr,
   };

@@ -93,7 +93,7 @@ describe("computeTotals", () => {
     expect(result.timeStr).toBe("0:18");
   });
 
-  it("does not multiply totalIn/totalOut by repeat", () => {
+  it("multiplies totalIn/totalOut by repeat too", () => {
     const blocks: Block[] = [
       {
         id: "b1",
@@ -109,10 +109,9 @@ describe("computeTotals", () => {
 
     const result = computeTotals(blocks, 2);
 
-    // totalIn and totalOut are NOT multiplied by repeat
-    expect(result.totalIn).toBe(15); // 10 + 5
-    expect(result.totalOut).toBe(3);
-    // But totalTime is multiplied
+    // A full run repeats the whole block sequence, so mL totals scale with repeat too
+    expect(result.totalIn).toBe(30); // (10 + 5) * 2
+    expect(result.totalOut).toBe(6); // 3 * 2
     expect(result.totalTime).toBe(4); // 2 * 2
   });
 

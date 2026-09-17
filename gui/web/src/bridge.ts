@@ -280,8 +280,8 @@ class MockBackend implements BackendApi {
 
     this.running = true;
     this.paused = false;
-    emitEvent({ type: "pour_start", ml, s });
     emitEvent({ type: "status", status: "pouring" });
+    emitEvent({ type: "pour_start", ml, s });
 
     const start = Date.now();
     const duration = s * 1000;

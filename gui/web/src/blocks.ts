@@ -15,7 +15,7 @@ interface BlockEditor {
 }
 
 // Normalize a pump block: handle legacy {channel, ml, s} and missing channels
-function normalizePumpBlock(block: any): PumpBlock {
+export function normalizePumpBlock(block: any): PumpBlock {
   let pumps: Record<Channel, ChannelPump> = {
     A: { ml: 0, s: 0 },
     B: { ml: 0, s: 0 },

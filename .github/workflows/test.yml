@@ -1,0 +1,50 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main, gui-* ]
+  pull_request:
+    branches: [ main, gui-* ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install Python dependencies
+      run: |
+        cd gui
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+
+    - name: Run Python tests
+      run: |
+        cd gui
+        pytest -q
+
+    - name: Install Node dependencies
+      run: |
+        cd gui/web
+        npm ci
+
+    - name: Run TypeScript tests
+      run: |
+        cd gui/web
+        npm test
+
+    - name: Build TypeScript
+      run: |
+        cd gui/web
+        npm run build

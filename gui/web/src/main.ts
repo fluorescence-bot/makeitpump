@@ -6,6 +6,7 @@ import "./styles.css";
 import { getApi, onEvent, isMock } from "./bridge";
 import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
+import { computeTotals } from "./totals";
 import type { BackendApi, BackendEvent, Block, Preset, Channel, RunStatus } from "./types";
 
 // Global state
@@ -154,37 +155,9 @@ async function init(): Promise<void> {
   function updateProgramInfo(): void {
     const info = document.getElementById("program-info")!;
     const blocks = blocksEditor.getBlocks();
+    const totals = computeTotals(blocks, currentPreset.repeat);
 
-    let totalIn = 0;
-    let totalOut = 0;
-    let totalTime = 0;
-
-    blocks.forEach((block) => {
-      if (block.type === "pump") {
-        // Sum A, B, C for "in"
-        totalIn += (block.pumps.A?.ml || 0) + (block.pumps.B?.ml || 0) + (block.pumps.C?.ml || 0);
-        // Sum D for "out"
-        totalOut += block.pumps.D?.ml || 0;
-        // Duration is max(s) across all channels
-        const maxS = Math.max(
-          block.pumps.A?.s || 0,
-          block.pumps.B?.s || 0,
-          block.pumps.C?.s || 0,
-          block.pumps.D?.s || 0
-        );
-        totalTime += maxS;
-      } else {
-        totalTime += block.s;
-      }
-    });
-
-    // Multiply total time by repeat
-    const totalTimeWithRepeat = totalTime * currentPreset.repeat;
-    const minutes = Math.floor(totalTimeWithRepeat / 60);
-    const seconds = Math.round(totalTimeWithRepeat % 60);
-    const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
-
-    info.textContent = `In: ${totalIn.toFixed(1)} mL · Out: ${totalOut.toFixed(1)} mL · Time: ${timeStr}`;
+    info.textContent = `In: ${totals.totalIn.toFixed(1)} mL · Out: ${totals.totalOut.toFixed(1)} mL · Time: ${totals.timeStr}`;
   }
 
   // Update UI from preset

@@ -1,0 +1,56 @@
+name: Example
+solutions:
+  A: Milk
+  B: Water
+  C: NaOH
+  D: Final mix
+blocks:
+  - id: b1
+    type: pump
+    pumps:
+      A:
+        ml: 5
+        s: 10
+      B:
+        ml: 3
+        s: 6
+      C:
+        ml: 0
+        s: 0
+      D:
+        ml: 0
+        s: 0
+  - id: b2
+    type: pause
+    s: 5
+  - id: b3
+    type: pump
+    pumps:
+      A:
+        ml: 0
+        s: 0
+      B:
+        ml: 0
+        s: 0
+      C:
+        ml: 1
+        s: 4
+      D:
+        ml: 0
+        s: 0
+  - id: b4
+    type: pump
+    pumps:
+      A:
+        ml: 0
+        s: 0
+      B:
+        ml: 0
+        s: 0
+      C:
+        ml: 0
+        s: 0
+      D:
+        ml: 9
+        s: 15
+repeat: 1

@@ -9,7 +9,7 @@ gui/
   app.py                # starts the pywebview window
   api.py                # Api class exposed to JS (js_api) + program runner thread
   hardware.py           # STUBS the backend team replaces (print + nothing else)
-  presets/example.json
+  presets/example.yaml
   web/                  # Vite + TypeScript (vanilla, no framework)
     package.json, tsconfig.json, vite.config.ts (base: './')
     index.html
@@ -75,7 +75,7 @@ export interface BackendApi {
   manual_pump_stop(channel: Channel): Promise<{ ok: boolean }>;
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
-  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
+  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.yaml
   import_preset_file(): Promise<Preset | null>;                             // native open dialog
   export_preset_file(preset: Preset): Promise<{ ok: boolean }>;             // native save dialog
 }

@@ -15,6 +15,148 @@ export function isMock(): boolean {
   return mockMode;
 }
 
+// Simple YAML serializer for preset data (nested objects/arrays of primitives)
+function yamlStringify(obj: any, indent = 0): string {
+  const spaces = "  ".repeat(indent);
+  if (obj === null || obj === undefined) {
+    return "null";
+  }
+  if (typeof obj === "boolean") {
+    return obj ? "true" : "false";
+  }
+  if (typeof obj === "number") {
+    return String(obj);
+  }
+  if (typeof obj === "string") {
+    // Quote if contains special chars or newlines
+    if (/[:\n\r"']|^\s|\s$|^-|^#/.test(obj) || obj.includes(": ")) {
+      return JSON.stringify(obj);
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return "[]";
+    return obj
+      .map((item, i) => {
+        const itemStr = yamlStringify(item, indent + 1);
+        return i === 0 ? `\n${spaces}  - ${itemStr}` : `${spaces}  - ${itemStr}`;
+      })
+      .join("\n");
+  }
+  if (typeof obj === "object") {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return "{}";
+    return keys
+      .map((key) => {
+        const val = obj[key];
+        const valStr = yamlStringify(val, indent + 1);
+        if (valStr.startsWith("\n")) {
+          return `${spaces}${key}:${valStr}`;
+        }
+        return `${spaces}${key}: ${valStr}`;
+      })
+      .join("\n");
+  }
+  return String(obj);
+}
+
+// Simple YAML parser for preset data
+function yamlParse(yaml: string): any {
+  const lines = yaml.split("\n").map((line) => line.replace(/\r$/, ""));
+  let index = 0;
+
+  function parseValue(line: string, indent: number): any {
+    line = line.trim();
+    if (!line || line.startsWith("#")) return null;
+
+    // Array item
+    if (line.startsWith("- ")) {
+      return parseScalar(line.substring(2).trim());
+    }
+
+    // Key-value pair
+    const match = line.match(/^([^:]+):\s*(.*)/);
+    if (match) {
+      const key = match[1].trim();
+      const val = match[2].trim();
+      return { key, val };
+    }
+
+    return null;
+  }
+
+  function parseScalar(val: string): any {
+    val = val.trim();
+    if (val === "null") return null;
+    if (val === "true") return true;
+    if (val === "false") return false;
+    if (/^\d+$/.test(val)) return parseInt(val, 10);
+    if (/^\d*\.\d+$/.test(val)) return parseFloat(val);
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      return JSON.parse(val);
+    }
+    return val;
+  }
+
+  function getIndent(line: string): number {
+    const match = line.match(/^(\s*)/);
+    return match ? match[1].length : 0;
+  }
+
+  function parseObject(baseIndent: number): any {
+    const obj: any = {};
+    const arr: any[] = [];
+    let isArray = false;
+
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim() || line.trim().startsWith("#")) {
+        index++;
+        continue;
+      }
+
+      const indent = getIndent(line);
+      if (indent < baseIndent) break;
+
+      if (indent === baseIndent) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("- ")) {
+          isArray = true;
+          const itemStr = trimmed.substring(2).trim();
+          const itemVal = parseScalar(itemStr);
+          if (itemVal === null && !itemStr.startsWith("{")) {
+            index++;
+            arr.push(parseObject(baseIndent + 2));
+          } else {
+            arr.push(itemVal);
+            index++;
+          }
+        } else {
+          const match = trimmed.match(/^([^:]+):\s*(.*)/);
+          if (match) {
+            const key = match[1].trim();
+            const val = match[2].trim();
+            index++;
+            if (!val) {
+              obj[key] = parseObject(indent + 2);
+            } else {
+              obj[key] = parseScalar(val);
+            }
+          } else {
+            index++;
+          }
+        }
+      } else {
+        break;
+      }
+    }
+
+    return isArray ? arr : obj;
+  }
+
+  return parseObject(0);
+}
+
 // Mock backend implementation
 class MockBackend implements BackendApi {
   private running = false;
@@ -210,7 +352,7 @@ class MockBackend implements BackendApi {
     return new Promise((resolve) => {
       const input = document.createElement("input");
       input.type = "file";
-      input.accept = ".json";
+      input.accept = ".yaml,.yml";
       input.onchange = (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (!file) {
@@ -220,7 +362,7 @@ class MockBackend implements BackendApi {
         const reader = new FileReader();
         reader.onload = (ev) => {
           try {
-            const preset = JSON.parse(ev.target?.result as string);
+            const preset = yamlParse(ev.target?.result as string);
             resolve(preset);
           } catch {
             resolve(null);
@@ -234,13 +376,14 @@ class MockBackend implements BackendApi {
 
   async export_preset_file(preset: Preset): Promise<{ ok: boolean }> {
     try {
-      const blob = new Blob([JSON.stringify(preset, null, 2)], {
-        type: "application/json",
+      const yaml = yamlStringify(preset);
+      const blob = new Blob([yaml], {
+        type: "text/yaml",
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${preset.name}.json`;
+      a.download = `${preset.name}.yaml`;
       a.click();
       URL.revokeObjectURL(url);
       return { ok: true };

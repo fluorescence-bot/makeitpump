@@ -87,8 +87,8 @@ gui/
 ├── app.py              # Application entry point
 ├── api.py              # Backend API (exposed to JS)
 ├── hardware.py         # Hardware control stubs
-├── presets/            # Preset programs (JSON)
-│   └── example.json
+├── presets/            # Preset programs (YAML)
+│   └── example.yaml
 └── web/                # Frontend (Vite + TypeScript)
     ├── package.json
     ├── src/
@@ -106,7 +106,7 @@ gui/
 ### Backend (Python)
 - pywebview for desktop GUI
 - Threading for non-blocking program execution
-- JSON-based preset system
+- YAML-based preset system
 - Event-driven communication with frontend
 
 ## Troubleshooting

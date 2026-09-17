@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import hardware
 import webview
+import yaml
 
 
 def resource_dir() -> Path:
@@ -74,7 +75,10 @@ class Api:
             presets_dir.mkdir(exist_ok=True)
             bundled = resource_dir() / "presets"
             if first_run and bundled.is_dir():
-                for f in bundled.glob("*.json"):
+                for f in bundled.glob("*.yaml"):
+                    (presets_dir / f.name).write_bytes(f.read_bytes())
+                # Also copy any .yml files
+                for f in bundled.glob("*.yml"):
                     (presets_dir / f.name).write_bytes(f.read_bytes())
         else:
             presets_dir = Path(__file__).parent / "presets"
@@ -292,11 +296,12 @@ class Api:
         """List all available presets."""
         presets_dir = self._get_presets_dir()
         presets = []
-        for preset_file in presets_dir.glob("*.json"):
+        # List both .yaml and .yml files
+        for preset_file in list(presets_dir.glob("*.yaml")) + list(presets_dir.glob("*.yml")):
             try:
                 with open(preset_file) as f:
-                    preset_data = json.load(f)
-                    if "name" in preset_data:
+                    preset_data = yaml.safe_load(f)
+                    if preset_data and "name" in preset_data:
                         presets.append(preset_data["name"])
             except Exception:
                 pass
@@ -305,11 +310,12 @@ class Api:
     def load_preset(self, name: str) -> Optional[Dict[str, Any]]:
         """Load a preset by name."""
         presets_dir = self._get_presets_dir()
-        for preset_file in presets_dir.glob("*.json"):
+        # Search both .yaml and .yml files
+        for preset_file in list(presets_dir.glob("*.yaml")) + list(presets_dir.glob("*.yml")):
             try:
                 with open(preset_file) as f:
-                    preset_data = json.load(f)
-                    if preset_data.get("name") == name:
+                    preset_data = yaml.safe_load(f)
+                    if preset_data and preset_data.get("name") == name:
                         return preset_data
             except Exception:
                 pass
@@ -320,11 +326,11 @@ class Api:
         try:
             name = preset.get("name", "preset")
             presets_dir = self._get_presets_dir()
-            filename = self._sanitize_filename(name) + ".json"
+            filename = self._sanitize_filename(name) + ".yaml"
             preset_path = presets_dir / filename
 
             with open(preset_path, "w") as f:
-                json.dump(preset, f, indent=2)
+                yaml.safe_dump(preset, f, sort_keys=False, default_flow_style=False)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -343,12 +349,12 @@ class Api:
 
             file_result = self._window.create_file_dialog(
                 dialog_type,
-                file_types=("JSON files (*.json)", "All files (*.*)",),
+                file_types=("YAML files (*.yaml *.yml)", "All files (*.*)",),
             )
             if file_result:
                 file_path = file_result[0]
                 with open(file_path) as f:
-                    return json.load(f)
+                    return yaml.safe_load(f)
         except Exception as e:
             print(f"[api] Failed to import preset: {e}")
         return None
@@ -368,14 +374,14 @@ class Api:
             name = preset.get("name", "preset")
             file_path = self._window.create_file_dialog(
                 dialog_type,
-                file_types=("JSON files (*.json)",),
-                save_filename=self._sanitize_filename(name) + ".json",
+                file_types=("YAML files (*.yaml)",),
+                save_filename=self._sanitize_filename(name) + ".yaml",
             )
             if isinstance(file_path, (list, tuple)):
                 file_path = file_path[0] if file_path else None
             if file_path:
                 with open(file_path, "w") as f:
-                    json.dump(preset, f, indent=2)
+                    yaml.safe_dump(preset, f, sort_keys=False, default_flow_style=False)
                 return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

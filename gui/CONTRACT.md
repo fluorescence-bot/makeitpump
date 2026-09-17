@@ -1,0 +1,127 @@
+# RainMixer GUI: interface contract
+
+Every part of the GUI must follow this contract exactly. Paths are relative to `gui/`.
+
+```
+gui/
+  CONTRACT.md
+  requirements.txt      # pywebview
+  app.py                # starts the pywebview window
+  api.py                # Api class exposed to JS (js_api) + program runner thread
+  hardware.py           # STUBS the backend team replaces (print + nothing else)
+  presets/example.json
+  web/                  # Vite + TypeScript (vanilla, no framework)
+    package.json, tsconfig.json, vite.config.ts (base: './')
+    index.html
+    src/main.ts         # app wiring, layout, preset UI, controls, status
+    src/types.ts        # shared types (below), copy verbatim
+    src/bridge.ts       # talks to window.pywebview.api, falls back to an in-browser mock
+    src/blocks.ts       # program block editor (SortableJS)
+    src/scene.ts        # SVG cartoon scene (clouds A/B/C, bowl D, final cup)
+    src/scene.css
+    src/styles.css      # global pastel tokens + layout
+```
+
+## Visual style
+Cute cartoon / anime / childlike, pastel. Rounded font **M PLUS Rounded 1c** via npm `@fontsource/m-plus-rounded-1c` (weights 400/700/800), bundled for offline use. Soft coloured outlines (not black), big rounded corners, gentle bobbing and bouncy hover.
+
+CSS tokens, defined on `:root` in `styles.css`. `scene.css` may use them.
+```
+--col-a:#A8E8F0; --col-a-ink:#4FB3C6;   /* cyan candyfloss */
+--col-b:#FFB8D9; --col-b-ink:#E07AAE;   /* pink candyfloss */
+--col-c:#FFE7A0; --col-c-ink:#D9B34A;   /* butter yellow  */
+--col-d-empty:#EDE7FA; --col-d-ink:#9A7FD6; /* bowl (actual liquid colour is blended live) */
+--bg-top:#F4F0FF; --bg-bottom:#FFF6FB; --panel:#FFFFFF; --ink:#5B4B7A; --muted:#A99BC4;
+--ok:#8EDFB4; --danger:#FF9AA8; --radius:22px; --font:"M PLUS Rounded 1c", system-ui, sans-serif;
+```
+
+## src/types.ts (verbatim)
+```ts
+export type Channel = "A" | "B" | "C" | "D";
+export type SourceChannel = "A" | "B" | "C";
+
+export interface PumpBlock { id: string; type: "pump"; channel: Channel; ml: number; s: number; }
+export interface PauseBlock { id: string; type: "pause"; s: number; }
+export type Block = PumpBlock | PauseBlock;
+
+export interface Preset {
+  name: string;
+  solutions: Record<Channel, string>;   // free-text names, e.g. {A:"Milk",B:"Water",C:"NaOH",D:"Final mix"}
+  blocks: Block[];
+  repeat: number;                        // >= 1
+}
+
+export type RunStatus = "ready" | "raining" | "paused" | "pouring" | "done" | "stopped" | "error";
+
+// Events pushed from backend -> UI
+export type BackendEvent =
+  | { type: "status"; status: RunStatus; message?: string }
+  | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
+  | { type: "block_end"; index: number; repeat: number }
+  | { type: "progress"; fraction: number }                                  // 0..1 of whole run
+  | { type: "pour_start"; ml: number; s: number }
+  | { type: "manual"; channel: Channel; active: boolean };
+
+export interface BackendApi {
+  run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }>;
+  pause_run(): Promise<{ ok: boolean }>;
+  resume_run(): Promise<{ ok: boolean }>;
+  stop(): Promise<{ ok: boolean }>;
+  pour(ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
+  manual_pump_start(channel: Channel): Promise<{ ok: boolean }>;
+  manual_pump_stop(channel: Channel): Promise<{ ok: boolean }>;
+  list_presets(): Promise<string[]>;
+  load_preset(name: string): Promise<Preset | null>;
+  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
+  import_preset_file(): Promise<Preset | null>;                             // native open dialog
+  export_preset_file(preset: Preset): Promise<{ ok: boolean }>;             // native save dialog
+}
+```
+
+## Event delivery
+Python calls `window.__onBackendEvent(<json object>)` via `window.evaluate_js(...)`.
+`bridge.ts` installs `window.__onBackendEvent` and lets the app subscribe with `onEvent(cb)`.
+
+## bridge.ts exports
+```ts
+export async function getApi(): Promise<BackendApi>;  // waits for 'pywebviewready' (max 800 ms), else returns mock
+export function onEvent(cb: (e: BackendEvent) => void): void;
+export function isMock(): boolean;
+```
+The mock mirrors the Python runner using timers, emits the same events, and keeps presets in localStorage (wrapped in try/catch). File import/export uses `<input type=file>` and a Blob download.
+
+## Runner semantics (Python and mock must match)
+- `run_program`: rejects if something is already running. Sets status `raining`. For r in 0..repeat-1 and each block i, it emits `block_start`, runs it, then emits `block_end` and `progress`. When finished it sets status `done`.
+- A pump block calls `hardware.start_pump(channel, ml, s)`, waits `s` seconds in ≤50 ms steps while checking stop/pause, then calls `hardware.stop_pump(channel)`.
+- A pause block waits `s` seconds, checking stop/pause the same way.
+- Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining ml/s pro-rata (re-emitting `block_start` with the remaining block values is fine).
+- Stop: `hardware.stop_all()`, status `stopped`.
+- `pour(ml, s)`: same as a pump block on channel D, but emits `pour_start` and status `pouring`, then `done`.
+- Manual: calls `hardware.start_pump`/`stop_pump` with ml=0, s=0 (meaning "run until stopped") and emits a `manual` event.
+
+## hardware.py (stubs for the backend team)
+```python
+def start_pump(channel: str, ml: float, s: float) -> None: ...   # non-blocking start
+def stop_pump(channel: str) -> None: ...
+def stop_all() -> None: ...
+```
+Each stub just prints what it would do.
+
+## scene.ts exports
+```ts
+import type { Channel, SourceChannel } from "./types";
+export interface Scene {
+  setNames(names: Record<Channel, string>): void;
+  onNameChange(cb: (ch: Channel, name: string) => void): void;       // user edited a label in the scene
+  startRain(ch: SourceChannel, ml: number, s: number): void;         // cloud rains for s sec, bowl gains ml gradually
+  startPour(ml: number, s: number): void;                            // bowl drains ml over s sec into final cup
+  setPaused(paused: boolean): void;                                  // freeze/unfreeze running animations
+  stopAll(): void;                                                   // end all animations now (volumes stay)
+  setManual(ch: Channel, active: boolean): void;                     // visual rain/drip while held
+  onManualPress(cb: (ch: Channel, active: boolean) => void): void;   // press-and-hold (>=300 ms) on a cloud or bowl
+  resetBowl(): void;
+  getBowl(): { A: number; B: number; C: number; total: number };
+}
+export function createScene(container: HTMLElement): Scene;
+```
+Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). A pump block on channel D in the program should call `startPour`.

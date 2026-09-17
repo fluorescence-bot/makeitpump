@@ -1,0 +1,45 @@
+{
+  "name": "Example",
+  "solutions": {
+    "A": "Milk",
+    "B": "Water",
+    "C": "NaOH",
+    "D": "Final mix"
+  },
+  "blocks": [
+    {
+      "id": "block-1",
+      "type": "pump",
+      "channel": "A",
+      "ml": 5.0,
+      "s": 10.0
+    },
+    {
+      "id": "block-2",
+      "type": "pause",
+      "s": 5.0
+    },
+    {
+      "id": "block-3",
+      "type": "pump",
+      "channel": "B",
+      "ml": 3.0,
+      "s": 6.0
+    },
+    {
+      "id": "block-4",
+      "type": "pump",
+      "channel": "C",
+      "ml": 1.0,
+      "s": 4.0
+    },
+    {
+      "id": "block-5",
+      "type": "pump",
+      "channel": "D",
+      "ml": 9.0,
+      "s": 15.0
+    }
+  ],
+  "repeat": 1
+}

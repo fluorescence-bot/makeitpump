@@ -1,0 +1,314 @@
+/* RainMixer scene styles */
+
+.rm-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--bg-top, #F4F0FF) 0%, var(--bg-bottom, #FFF6FB) 100%);
+}
+
+.rm-scene {
+  display: block;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Cloud animations */
+@keyframes rm-bob-a {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes rm-bob-b {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes rm-bob-c {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+.rm-cloud-a {
+  animation: rm-bob-a 4s ease-in-out infinite;
+  transform-origin: 170px 120px;
+}
+
+.rm-cloud-b {
+  animation: rm-bob-b 4.5s ease-in-out infinite 0.3s;
+  transform-origin: 450px 120px;
+}
+
+.rm-cloud-c {
+  animation: rm-bob-c 5s ease-in-out infinite 0.6s;
+  transform-origin: 730px 120px;
+}
+
+/* Cloud wobble when raining */
+@keyframes rm-wobble {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-0.5deg);
+  }
+  75% {
+    transform: rotate(0.5deg);
+  }
+}
+
+.rm-cloud.rm-raining {
+  animation: rm-wobble 0.4s ease-in-out infinite !important;
+}
+
+/* Cloud eyes squint (> <) when raining */
+.rm-cloud .rm-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.15s;
+}
+.rm-cloud.rm-raining .rm-eye {
+  transform: scale(1.3, 0.25);
+}
+
+/* Liquid, ripples, tube */
+.rm-liquid path,
+.rm-liquid-surface {
+  stroke: var(--col-d-ink, #9A7FD6);
+  stroke-width: 2;
+  transition: fill 0.3s;
+}
+.rm-liquid-surface {
+  filter: brightness(1.06);
+}
+.rm-ripple {
+  fill: none;
+  stroke: var(--col-d-ink, #9A7FD6);
+  stroke-width: 1.5;
+  rx: 4px;
+  ry: 1.5px;
+  animation: rm-ripple 0.6s ease-out forwards;
+}
+@keyframes rm-ripple {
+  from { rx: 4px; ry: 1.5px; opacity: 0.8; }
+  to { rx: 22px; ry: 6px; opacity: 0; }
+}
+.rm-pouring path {
+  stroke-dasharray: 10 8;
+  animation: rm-flow 0.6s linear infinite;
+}
+@keyframes rm-flow {
+  to { stroke-dashoffset: -18; }
+}
+.rm-paused * {
+  animation-play-state: paused !important;
+}
+
+/* Sparkle animation */
+@keyframes rm-twinkle-0 {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes rm-twinkle-1 {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes rm-twinkle-2 {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes rm-twinkle-3 {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@keyframes rm-twinkle-4 {
+  0%, 100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.rm-sparkle-0 {
+  animation: rm-twinkle-0 3s ease-in-out infinite;
+}
+
+.rm-sparkle-1 {
+  animation: rm-twinkle-1 2.5s ease-in-out infinite 0.5s;
+}
+
+.rm-sparkle-2 {
+  animation: rm-twinkle-2 3.5s ease-in-out infinite 1s;
+}
+
+.rm-sparkle-3 {
+  animation: rm-twinkle-3 2.8s ease-in-out infinite 0.3s;
+}
+
+.rm-sparkle-4 {
+  animation: rm-twinkle-4 3.2s ease-in-out infinite 0.8s;
+}
+
+/* Sun animation */
+@keyframes rm-sun-glow {
+  0%, 100% {
+    filter: drop-shadow(0 0 5px rgba(255, 231, 160, 0.5));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(255, 231, 160, 0.8));
+  }
+}
+
+.rm-sun {
+  animation: rm-sun-glow 3s ease-in-out infinite;
+}
+
+/* Liquid surface wave animation */
+@keyframes rm-wave {
+  0%, 100% {
+    d: path('M 300 250 Q 320 248 340 250 T 380 250 T 420 250 T 460 250 T 500 250 T 540 250 T 580 250 T 600 250');
+  }
+  50% {
+    d: path('M 300 250 Q 320 253 340 250 T 380 248 T 420 252 T 460 250 T 500 252 T 540 248 T 580 250 T 600 250');
+  }
+}
+
+.rm-liquid {
+  opacity: 0.9;
+}
+
+/* Interactive cursor */
+.rm-interactive {
+  cursor: pointer;
+}
+
+.rm-interactive:hover {
+  opacity: 0.9;
+  filter: brightness(1.05);
+}
+
+.rm-interactive:active {
+  filter: brightness(0.95);
+}
+
+/* Manual mode active */
+.rm-cloud.rm-manual-active {
+  filter: brightness(1.1);
+}
+
+/* Paused state */
+.rm-paused .rm-cloud,
+.rm-paused .rm-sparkle-0,
+.rm-paused .rm-sparkle-1,
+.rm-paused .rm-sparkle-2,
+.rm-paused .rm-sun {
+  animation-play-state: paused;
+}
+
+/* Name inputs (inside SVG foreignObject) */
+.rm-name-input {
+  pointer-events: auto;
+  background: white;
+  border: 2px solid var(--col-d-ink, #9A7FD6);
+  border-radius: 12px;
+  padding: 5px 8px;
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #5B4B7A);
+  outline: none;
+  transition: all 0.2s;
+  width: 85px;
+  text-align: center;
+  box-sizing: border-box;
+  height: 28px;
+}
+
+.rm-name-input:focus {
+  border-color: var(--col-a-ink, #4FB3C6);
+  background: #F4F0FF;
+  box-shadow: 0 0 12px rgba(79, 179, 198, 0.3);
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .rm-cloud-a,
+  .rm-cloud-b,
+  .rm-cloud-c,
+  .rm-sparkle-0,
+  .rm-sparkle-1,
+  .rm-sparkle-2,
+  .rm-sun,
+  .rm-cloud.rm-raining {
+    animation: none !important;
+  }
+
+  .rm-cloud.rm-raining {
+    opacity: 0.8;
+  }
+
+  .rm-drop {
+    animation: none !important;
+  }
+}
+
+/* Drop styles */
+.rm-drop {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.rm-tube-drops circle {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+/* Bowl interaction */
+.rm-bowl {
+  transition: opacity 0.2s;
+}
+
+.rm-bowl:hover {
+  opacity: 0.95;
+}
+
+/* Face animations */
+.rm-cloud-face {
+  pointer-events: none;
+}
+
+.rm-bowl-face {
+  pointer-events: none;
+}

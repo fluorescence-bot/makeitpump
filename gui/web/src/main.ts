@@ -18,6 +18,7 @@ let currentPreset: Preset = {
 };
 
 let isRunning = false;
+let currentStatus: RunStatus = "ready";
 
 // Initialize app
 async function init(): Promise<void> {
@@ -160,27 +161,37 @@ async function init(): Promise<void> {
 
     blocks.forEach((block) => {
       if (block.type === "pump") {
-        if (block.channel === "D") {
-          totalOut += block.ml;
-        } else {
-          totalIn += block.ml;
-        }
-        totalTime += block.s;
+        // Sum A, B, C for "in"
+        totalIn += (block.pumps.A?.ml || 0) + (block.pumps.B?.ml || 0) + (block.pumps.C?.ml || 0);
+        // Sum D for "out"
+        totalOut += block.pumps.D?.ml || 0;
+        // Duration is max(s) across all channels
+        const maxS = Math.max(
+          block.pumps.A?.s || 0,
+          block.pumps.B?.s || 0,
+          block.pumps.C?.s || 0,
+          block.pumps.D?.s || 0
+        );
+        totalTime += maxS;
       } else {
         totalTime += block.s;
       }
     });
 
-    const minutes = Math.floor(totalTime / 60);
-    const seconds = Math.round(totalTime % 60);
+    // Multiply total time by repeat
+    const totalTimeWithRepeat = totalTime * currentPreset.repeat;
+    const minutes = Math.floor(totalTimeWithRepeat / 60);
+    const seconds = Math.round(totalTimeWithRepeat % 60);
     const timeStr = `${minutes}:${seconds.toString().padStart(2, "0")}`;
 
-    info.textContent = `Total in: ${totalIn.toFixed(1)} mL · Out: ${totalOut.toFixed(1)} mL · Time: ${timeStr} × ${currentPreset.repeat}`;
+    info.textContent = `In: ${totalIn.toFixed(1)} mL · Out: ${totalOut.toFixed(1)} mL · Time: ${timeStr}`;
   }
 
   // Update UI from preset
   function updateUI(): void {
     blocksEditor.setBlocks(currentPreset.blocks);
+    // After setBlocks normalizes, update the stored blocks
+    currentPreset.blocks = blocksEditor.getBlocks();
     scene.setNames(currentPreset.solutions);
     const repeatInput = document.getElementById("repeat-input") as HTMLInputElement;
     repeatInput.value = String(currentPreset.repeat);
@@ -286,18 +297,55 @@ async function init(): Promise<void> {
 
   // Manual pump control
   scene.onManualPress(async (ch: Channel, active: boolean) => {
+    // Ignore if a program or pour is running
+    if (currentStatus === "raining" || currentStatus === "pouring" || currentStatus === "paused") {
+      return;
+    }
     if (active) {
-      await api.manual_pump_start(ch);
+      const result = await api.manual_pump_start(ch);
+      if (!result.ok) {
+        return;
+      }
     } else {
       await api.manual_pump_stop(ch);
     }
   });
+
+  // Validation helper
+  function validateBlocks(blocks: Block[]): { ok: boolean; message?: string } {
+    for (const block of blocks) {
+      if (block.type === "pump") {
+        const channels: Channel[] = ["A", "B", "C", "D"];
+        for (const ch of channels) {
+          const pump = block.pumps[ch];
+          if (pump) {
+            if (pump.ml < 0 || pump.s < 0) {
+              return { ok: false, message: `${ch}: negative value` };
+            }
+            if (pump.ml > 0 && pump.s === 0) {
+              return { ok: false, message: `${ch}: mL set but s = 0` };
+            }
+          }
+        }
+      }
+    }
+    return { ok: true };
+  }
 
   // Control bar buttons
   document.getElementById("btn-rain")!.onclick = async () => {
     const blocks = blocksEditor.getBlocks();
     if (!blocks.length) {
       alert("Add some blocks first!");
+      return;
+    }
+
+    const validation = validateBlocks(blocks);
+    if (!validation.ok) {
+      const statusPill = document.getElementById("status-pill")!;
+      statusPill.textContent = validation.message || "Invalid";
+      statusPill.className = "status-pill status-error";
+      statusPill.title = validation.message || "Invalid block";
       return;
     }
 
@@ -364,6 +412,7 @@ async function init(): Promise<void> {
 
     if (event.type === "status") {
       const status = event.status;
+      currentStatus = status;
       statusPill.textContent = status === "raining" ? "Raining..." :
                                 status === "paused" ? "Paused" :
                                 status === "pouring" ? "Pouring..." :
@@ -406,11 +455,18 @@ async function init(): Promise<void> {
 
       const block = event.block;
       if (block.type === "pump") {
-        if (block.channel === "A" || block.channel === "B" || block.channel === "C") {
-          scene.startRain(block.channel, block.ml, block.s);
-        } else if (block.channel === "D") {
-          scene.startPour(block.ml, block.s);
-        }
+        // For each channel with s > 0, start rain or pour
+        const channels: Channel[] = ["A", "B", "C", "D"];
+        channels.forEach((ch) => {
+          const pump = block.pumps[ch];
+          if (pump && pump.s > 0) {
+            if (ch === "D") {
+              scene.startPour(pump.ml, pump.s);
+            } else {
+              scene.startRain(ch as any, pump.ml, pump.s);
+            }
+          }
+        });
       }
     } else if (event.type === "block_end") {
       // Block ended

@@ -1,5 +1,5 @@
 import Sortable from "sortablejs";
-import type { Block, PumpBlock, PauseBlock, Channel } from "./types";
+import type { Block, PumpBlock, PauseBlock, Channel, ChannelPump } from "./types";
 
 interface CreateBlockEditorOpts {
   getNames: () => Record<Channel, string>;
@@ -12,6 +12,39 @@ interface BlockEditor {
   highlight(index: number | null): void;
   setLocked(locked: boolean): void;
   refreshNames(): void;
+}
+
+// Normalize a pump block: handle legacy {channel, ml, s} and missing channels
+function normalizePumpBlock(block: any): PumpBlock {
+  let pumps: Record<Channel, ChannelPump> = {
+    A: { ml: 0, s: 0 },
+    B: { ml: 0, s: 0 },
+    C: { ml: 0, s: 0 },
+    D: { ml: 0, s: 0 },
+  };
+
+  if (block.pumps && typeof block.pumps === "object") {
+    // New format: fill in missing channels
+    const channels: Channel[] = ["A", "B", "C", "D"];
+    channels.forEach((ch) => {
+      const p = block.pumps[ch];
+      const ml = typeof p?.ml === "number" && isFinite(p.ml) ? p.ml : 0;
+      const s = typeof p?.s === "number" && isFinite(p.s) ? p.s : 0;
+      pumps[ch] = { ml, s };
+    });
+  } else if (block.channel && (block.ml !== undefined || block.s !== undefined)) {
+    // Legacy format: convert to new
+    const ch = block.channel as Channel;
+    const ml = typeof block.ml === "number" && isFinite(block.ml) ? block.ml : 0;
+    const s = typeof block.s === "number" && isFinite(block.s) ? block.s : 0;
+    pumps[ch] = { ml, s };
+  }
+
+  return {
+    id: block.id,
+    type: "pump" as const,
+    pumps,
+  };
 }
 
 export function createBlockEditor(
@@ -40,12 +73,6 @@ export function createBlockEditor(
     blocks.forEach((block, i) => {
       const card = document.createElement("div");
       card.className = `block-card block-${block.type}`;
-      if (block.type === "pump") {
-        const channelClass = `block-ch-${(block as PumpBlock).channel.toLowerCase()}`;
-        card.classList.add(channelClass);
-      } else {
-        card.classList.add("block-pause");
-      }
       card.dataset.index = String(i);
 
       const indexBadge = document.createElement("div");
@@ -56,86 +83,198 @@ export function createBlockEditor(
       dragHandle.className = "block-drag-handle";
       dragHandle.textContent = "⋮⋮";
 
-      const content = document.createElement("div");
-      content.className = "block-content";
-
       if (block.type === "pump") {
         const pblock = block as PumpBlock;
         const names = opts.getNames();
-
-        const channelGroup = document.createElement("div");
-        channelGroup.className = "block-field";
-
-        const channelSelect = document.createElement("select");
-        channelSelect.disabled = locked;
-        channelSelect.className = "block-channel-select";
         const channels: Channel[] = ["A", "B", "C", "D"];
+
+        // Calculate max duration
+        const maxS = Math.max(...channels.map((ch) => pblock.pumps[ch].s));
+
+        // Header with drag handle, index, duration, actions
+        const header = document.createElement("div");
+        header.className = "pump-header";
+        header.appendChild(indexBadge);
+        header.appendChild(dragHandle);
+
+        const headerLabel = document.createElement("div");
+        headerLabel.className = "pump-header-label";
+        headerLabel.innerHTML = `<span class="pump-emoji">💧</span><span class="pump-title">Pump</span><span class="pump-duration">· ${maxS} s</span>`;
+        header.appendChild(headerLabel);
+
+        const actions = document.createElement("div");
+        actions.className = "block-actions";
+
+        const dupBtn = document.createElement("button");
+        dupBtn.textContent = "📋";
+        dupBtn.disabled = locked;
+        dupBtn.title = "Duplicate";
+        dupBtn.onclick = () => {
+          const newBlock = { ...block, id: generateId() };
+          blocks.splice(i + 1, 0, newBlock);
+          opts.onChange(blocks);
+          renderBlocks();
+        };
+        actions.appendChild(dupBtn);
+
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "🗑";
+        delBtn.disabled = locked;
+        delBtn.title = "Delete";
+        delBtn.onclick = () => {
+          blocks.splice(i, 1);
+          opts.onChange(blocks);
+          renderBlocks();
+        };
+        actions.appendChild(delBtn);
+
+        header.appendChild(actions);
+        card.appendChild(header);
+
+        // Grid: columns for A, B, C, D and rows for Letter, mL, s
+        const grid = document.createElement("div");
+        grid.className = "pump-grid";
+
+        // Row headers (mL and s labels)
+        const emptyCorner = document.createElement("div");
+        emptyCorner.className = "pump-grid-empty";
+        grid.appendChild(emptyCorner);
+
+        // Letter row
+        const pillCells: Map<Channel, HTMLElement> = new Map();
+        const mlCells: Map<Channel, HTMLElement> = new Map();
+        const sCells: Map<Channel, HTMLElement> = new Map();
+
         channels.forEach((ch) => {
-          const opt = document.createElement("option");
-          opt.value = ch;
-          opt.textContent = `${ch} · ${names[ch] || "?"}`;
-          if (pblock.channel === ch) opt.selected = true;
-          channelSelect.appendChild(opt);
+          const cell = document.createElement("div");
+          cell.className = `pump-grid-cell pump-grid-letter pump-ch-${ch.toLowerCase()}`;
+          const pill = document.createElement("div");
+          pill.className = "pump-pill";
+          const chText = document.createElement("span");
+          chText.textContent = ch;
+          const nameText = document.createElement("span");
+          nameText.className = "pump-pill-name";
+          nameText.textContent = names[ch] || "?";
+          pill.appendChild(chText);
+          pill.appendChild(document.createTextNode(" · "));
+          pill.appendChild(nameText);
+          cell.appendChild(pill);
+
+          pillCells.set(ch, cell);
+          grid.appendChild(cell);
         });
 
-        channelSelect.onchange = () => {
-          const newBlock = { ...pblock, channel: channelSelect.value as Channel };
-          blocks[i] = newBlock;
-          opts.onChange(blocks);
-          renderBlocks();
-        };
+        // mL row
+        const mlRowLabel = document.createElement("div");
+        mlRowLabel.className = "pump-grid-label";
+        mlRowLabel.textContent = "mL";
+        grid.appendChild(mlRowLabel);
 
-        channelGroup.appendChild(channelSelect);
-        content.appendChild(channelGroup);
+        channels.forEach((ch) => {
+          const cell = document.createElement("div");
+          cell.className = "pump-grid-cell pump-grid-input";
+          mlCells.set(ch, cell);
+          const pump = pblock.pumps[ch];
+          const input = document.createElement("input");
+          input.type = "number";
+          input.step = "0.1";
+          input.min = "0";
+          input.disabled = locked;
+          input.value = String(pump.ml);
 
-        const mlGroup = document.createElement("div");
-        mlGroup.className = "block-field";
-        const mlLabel = document.createElement("label");
-        mlLabel.textContent = "mL";
-        const mlInput = document.createElement("input");
-        mlInput.type = "number";
-        mlInput.step = "0.1";
-        mlInput.min = "0";
-        mlInput.disabled = locked;
-        mlInput.value = String(pblock.ml);
-        mlInput.onchange = () => {
-          const val = parseFloat(mlInput.value);
-          const newBlock = { ...pblock, ml: isNaN(val) ? 0 : val };
-          blocks[i] = newBlock;
-          opts.onChange(blocks);
-          renderBlocks();
-        };
-        mlGroup.appendChild(mlLabel);
-        mlGroup.appendChild(mlInput);
-        content.appendChild(mlGroup);
+          input.onchange = () => {
+            const val = parseFloat(input.value);
+            const newPumps = { ...pblock.pumps };
+            newPumps[ch] = {
+              ...newPumps[ch],
+              ml: isNaN(val) || val < 0 ? 0 : val,
+            };
+            const newBlock: PumpBlock = { ...pblock, pumps: newPumps };
+            blocks[i] = newBlock;
+            opts.onChange(blocks);
+            renderBlocks();
+          };
 
-        const secGroup = document.createElement("div");
-        secGroup.className = "block-field";
-        const secLabel = document.createElement("label");
-        secLabel.textContent = "s";
-        const secInput = document.createElement("input");
-        secInput.type = "number";
-        secInput.step = "0.5";
-        secInput.min = "0";
-        secInput.disabled = locked;
-        secInput.value = String(pblock.s);
-        secInput.onchange = () => {
-          const val = parseFloat(secInput.value);
-          const newBlock = { ...pblock, s: isNaN(val) ? 0 : val };
-          blocks[i] = newBlock;
-          opts.onChange(blocks);
-          renderBlocks();
-        };
-        secGroup.appendChild(secLabel);
-        secGroup.appendChild(secInput);
-        content.appendChild(secGroup);
+          cell.appendChild(input);
+          grid.appendChild(cell);
+        });
+
+        // s row
+        const sRowLabel = document.createElement("div");
+        sRowLabel.className = "pump-grid-label";
+        sRowLabel.textContent = "s";
+        grid.appendChild(sRowLabel);
+
+        channels.forEach((ch) => {
+          const cell = document.createElement("div");
+          cell.className = "pump-grid-cell pump-grid-input";
+          sCells.set(ch, cell);
+          const pump = pblock.pumps[ch];
+          const input = document.createElement("input");
+          input.type = "number";
+          input.step = "0.5";
+          input.min = "0";
+          input.disabled = locked;
+          input.value = String(pump.s);
+
+          input.onchange = () => {
+            const val = parseFloat(input.value);
+            const newPumps = { ...pblock.pumps };
+            newPumps[ch] = {
+              ...newPumps[ch],
+              s: isNaN(val) || val < 0 ? 0 : val,
+            };
+            const newBlock: PumpBlock = { ...pblock, pumps: newPumps };
+            blocks[i] = newBlock;
+            opts.onChange(blocks);
+            renderBlocks();
+          };
+
+          cell.appendChild(input);
+          grid.appendChild(cell);
+        });
+
+        // Apply dimmed and danger states
+        channels.forEach((ch) => {
+          const pump = pblock.pumps[ch];
+          const isDimmed = pump.ml === 0 && pump.s === 0;
+          const isDanger = pump.ml < 0 || pump.s < 0 || (pump.ml > 0 && pump.s === 0);
+
+          const pillCell = pillCells.get(ch);
+          const mlCell = mlCells.get(ch);
+          const sCell = sCells.get(ch);
+
+          if (isDanger) {
+            mlCell?.classList.add("pump-grid-danger");
+            sCell?.classList.add("pump-grid-danger");
+          }
+          if (isDimmed && !isDanger) {
+            pillCell?.classList.add("pump-grid-dimmed");
+            mlCell?.classList.add("pump-grid-dimmed");
+            sCell?.classList.add("pump-grid-dimmed");
+          }
+        });
+
+        card.appendChild(grid);
       } else {
+        // Pause block
         const pauseBlock = block as PauseBlock;
 
+        const content = document.createElement("div");
+        content.className = "block-content block-pause";
+
+        card.appendChild(indexBadge);
+        card.appendChild(dragHandle);
+
+        const pauseLabel = document.createElement("div");
+        pauseLabel.className = "pause-label";
+        pauseLabel.innerHTML = `<span class="pause-emoji">⏸</span><span class="pause-title">Pause</span>`;
+        content.appendChild(pauseLabel);
+
         const secGroup = document.createElement("div");
         secGroup.className = "block-field";
         const secLabel = document.createElement("label");
-        secLabel.textContent = "Pause for";
+        secLabel.textContent = "for";
         const secInput = document.createElement("input");
         secInput.type = "number";
         secInput.step = "0.5";
@@ -144,7 +283,7 @@ export function createBlockEditor(
         secInput.value = String(pauseBlock.s);
         secInput.onchange = () => {
           const val = parseFloat(secInput.value);
-          const newBlock = { ...pauseBlock, s: isNaN(val) ? 0 : val };
+          const newBlock = { ...pauseBlock, s: isNaN(val) || val < 0 ? 0 : val };
           blocks[i] = newBlock;
           opts.onChange(blocks);
           renderBlocks();
@@ -155,38 +294,37 @@ export function createBlockEditor(
         secGroup.appendChild(secInput);
         secGroup.appendChild(secUnit);
         content.appendChild(secGroup);
+
+        const actions = document.createElement("div");
+        actions.className = "block-actions";
+
+        const dupBtn = document.createElement("button");
+        dupBtn.textContent = "📋";
+        dupBtn.disabled = locked;
+        dupBtn.title = "Duplicate";
+        dupBtn.onclick = () => {
+          const newBlock = { ...block, id: generateId() };
+          blocks.splice(i + 1, 0, newBlock);
+          opts.onChange(blocks);
+          renderBlocks();
+        };
+        actions.appendChild(dupBtn);
+
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "🗑";
+        delBtn.disabled = locked;
+        delBtn.title = "Delete";
+        delBtn.onclick = () => {
+          blocks.splice(i, 1);
+          opts.onChange(blocks);
+          renderBlocks();
+        };
+        actions.appendChild(delBtn);
+
+        content.appendChild(actions);
+        card.appendChild(content);
       }
 
-      const actions = document.createElement("div");
-      actions.className = "block-actions";
-
-      const dupBtn = document.createElement("button");
-      dupBtn.textContent = "📋";
-      dupBtn.disabled = locked;
-      dupBtn.title = "Duplicate";
-      dupBtn.onclick = () => {
-        const newBlock = { ...block, id: generateId() };
-        blocks.splice(i + 1, 0, newBlock);
-        opts.onChange(blocks);
-        renderBlocks();
-      };
-      actions.appendChild(dupBtn);
-
-      const delBtn = document.createElement("button");
-      delBtn.textContent = "🗑";
-      delBtn.disabled = locked;
-      delBtn.title = "Delete";
-      delBtn.onclick = () => {
-        blocks.splice(i, 1);
-        opts.onChange(blocks);
-        renderBlocks();
-      };
-      actions.appendChild(delBtn);
-
-      card.appendChild(indexBadge);
-      card.appendChild(dragHandle);
-      card.appendChild(content);
-      card.appendChild(actions);
       listEl.appendChild(card);
     });
   }
@@ -202,9 +340,12 @@ export function createBlockEditor(
       const newBlock: PumpBlock = {
         id: generateId(),
         type: "pump",
-        channel: "A",
-        ml: 5,
-        s: 10,
+        pumps: {
+          A: { ml: 1, s: 5 },
+          B: { ml: 0, s: 0 },
+          C: { ml: 0, s: 0 },
+          D: { ml: 0, s: 0 },
+        },
       };
       blocks.push(newBlock);
       opts.onChange(blocks);
@@ -262,9 +403,12 @@ export function createBlockEditor(
         newBlock = {
           id: generateId(),
           type: "pump",
-          channel: "A",
-          ml: 5,
-          s: 10,
+          pumps: {
+            A: { ml: 1, s: 5 },
+            B: { ml: 0, s: 0 },
+            C: { ml: 0, s: 0 },
+            D: { ml: 0, s: 0 },
+          },
         };
       } else {
         newBlock = {
@@ -296,7 +440,13 @@ export function createBlockEditor(
       return blocks;
     },
     setBlocks(b: Block[]): void {
-      blocks = b;
+      // Normalize pump blocks: handle legacy format and missing channels
+      blocks = b.map((block) => {
+        if (block.type === "pump") {
+          return normalizePumpBlock(block);
+        }
+        return block;
+      });
       renderBlocks();
     },
     highlight(index: number | null): void {
@@ -310,16 +460,7 @@ export function createBlockEditor(
     },
     setLocked(locked_: boolean): void {
       locked = locked_;
-      document.querySelectorAll<HTMLInputElement>(".block-card input, .block-card select, .block-card button")
-        .forEach((el) => {
-          if (el.classList.contains("block-drag-handle")) return;
-          el.disabled = locked;
-        });
-      if (locked) {
-        document.querySelector(".blocks-palette")?.classList.add("palette-locked");
-      } else {
-        document.querySelector(".blocks-palette")?.classList.remove("palette-locked");
-      }
+      renderBlocks();
     },
     refreshNames(): void {
       renderBlocks();

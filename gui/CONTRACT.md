@@ -40,7 +40,10 @@ CSS tokens, defined on `:root` in `styles.css`. `scene.css` may use them.
 export type Channel = "A" | "B" | "C" | "D";
 export type SourceChannel = "A" | "B" | "C";
 
-export interface PumpBlock { id: string; type: "pump"; channel: Channel; ml: number; s: number; }
+// A pump block runs all four channels at the same time. Each channel pumps its own
+// mL over its own seconds (s = 0 means that channel is idle). The block lasts max(s).
+export interface ChannelPump { ml: number; s: number; }
+export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
 export type Block = PumpBlock | PauseBlock;
 
@@ -92,12 +95,12 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 
 ## Runner semantics (Python and mock must match)
 - `run_program`: rejects if something is already running. Sets status `raining`. For r in 0..repeat-1 and each block i, it emits `block_start`, runs it, then emits `block_end` and `progress`. When finished it sets status `done`.
-- A pump block calls `hardware.start_pump(channel, ml, s)`, waits `s` seconds in ≤50 ms steps while checking stop/pause, then calls `hardware.stop_pump(channel)`.
+- A pump block starts every channel with `s > 0` simultaneously via `hardware.start_pump(channel, ml, s)`, stops each channel when its own `s` has elapsed, and ends after `max(s)`. It checks stop/pause every 50 ms.
 - A pause block waits `s` seconds, checking stop/pause the same way.
 - Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining ml/s pro-rata (re-emitting `block_start` with the remaining block values is fine).
 - Stop: `hardware.stop_all()`, status `stopped`.
 - `pour(ml, s)`: same as a pump block on channel D, but emits `pour_start` and status `pouring`, then `done`.
-- Manual: calls `hardware.start_pump`/`stop_pump` with ml=0, s=0 (meaning "run until stopped") and emits a `manual` event.
+- Manual: refused while a program or pour is running. Otherwise calls `hardware.start_pump`/`stop_pump` with ml=0, s=0 (meaning "run until stopped") and emits a `manual` event.
 
 ## hardware.py (stubs for the backend team)
 ```python
@@ -124,4 +127,4 @@ export interface Scene {
 }
 export function createScene(container: HTMLElement): Scene;
 ```
-Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). A pump block on channel D in the program should call `startPour`.
+Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each of A/B/C with s > 0 and `startPour(ml, s)` for D with s > 0.

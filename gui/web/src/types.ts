@@ -1,7 +1,10 @@
 export type Channel = "A" | "B" | "C" | "D";
 export type SourceChannel = "A" | "B" | "C";
 
-export interface PumpBlock { id: string; type: "pump"; channel: Channel; ml: number; s: number; }
+// A pump block runs all four channels at the same time. Each channel pumps its own
+// mL over its own seconds (s = 0 means that channel is idle). The block lasts max(s).
+export interface ChannelPump { ml: number; s: number; }
+export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
 export type Block = PumpBlock | PauseBlock;
 

@@ -34,13 +34,9 @@ class Api:
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
         self._resume_event = threading.Event()
-        self._current_block_paused = False
-        self._current_block_channel: Optional[str] = None
-        self._current_block_ml: float = 0.0
-        self._current_block_s: float = 0.0
-        self._current_block_start_time: float = 0.0
         self._runner_lock = threading.Lock()
         self._active_status = "raining"  # status to restore after resume
+        self._manual_channels: set = set()
 
     def set_window(self, window: Any) -> None:
         """Set the pywebview window object for event delivery."""
@@ -66,9 +62,23 @@ class Api:
         return sanitized or "preset"
 
     def _get_presets_dir(self) -> Path:
-        """Return the presets directory, creating it if needed."""
-        presets_dir = Path(__file__).parent / "presets"
-        presets_dir.mkdir(exist_ok=True)
+        """Return the user presets directory, creating it if needed.
+
+        When frozen (PyInstaller .exe) this is a `presets/` folder next to the
+        executable, so saved presets survive restarts; bundled examples are
+        copied there on first run.
+        """
+        if getattr(sys, "frozen", False):
+            presets_dir = Path(sys.executable).parent / "presets"
+            first_run = not presets_dir.exists()
+            presets_dir.mkdir(exist_ok=True)
+            bundled = resource_dir() / "presets"
+            if first_run and bundled.is_dir():
+                for f in bundled.glob("*.json"):
+                    (presets_dir / f.name).write_bytes(f.read_bytes())
+        else:
+            presets_dir = Path(__file__).parent / "presets"
+            presets_dir.mkdir(exist_ok=True)
         return presets_dir
 
     def _run_program_impl(self, blocks: List[Dict[str, Any]], repeat: int) -> None:
@@ -93,13 +103,9 @@ class Api:
                     block_type = block.get("type")
 
                     if block_type == "pump":
-                        channel = block.get("channel")
-                        ml = block.get("ml", 0.0)
-                        s = block.get("s", 0.0)
-                        self._run_pump_block(channel, ml, s)
+                        self._run_pump_block(block.get("pumps", {}))
                     elif block_type == "pause":
-                        s = block.get("s", 0.0)
-                        self._run_pause_block(s)
+                        self._run_pause_block(float(block.get("s", 0.0)))
 
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "block_end", "index": block_idx, "repeat": repeat_idx})
@@ -112,75 +118,85 @@ class Api:
             self._emit_event({"type": "status", "status": "error", "message": str(e)})
             hardware.stop_all()
 
-    def _run_pump_block(self, channel: str, ml: float, s: float) -> None:
-        """Run a pump block, checking for pause/stop in ≤50 ms steps."""
-        hardware.start_pump(channel, ml, s)
-        self._current_block_channel = channel
-        self._current_block_ml = ml
-        self._current_block_s = s
-        self._current_block_start_time = time.time()
-        self._current_block_paused = False
+    def _wait_step(self, elapsed: float, last: float) -> "tuple[float, float]":
+        """Sleep one step and return (elapsed, last), counting only un-paused time."""
+        time.sleep(0.05)
+        now = time.monotonic()
+        return elapsed + (now - last), now
 
-        elapsed = 0.0
-        step = 0.05  # 50 ms
+    def _run_pump_block(self, pumps: Dict[str, Any]) -> None:
+        """Run several channels at once. Each channel pumps its own mL over its own
+        seconds; the block ends when the longest channel is done. Checks
+        pause/stop every 50 ms."""
+        jobs: Dict[str, "tuple[float, float]"] = {}
+        for ch, p in pumps.items():
+            ml, s = float(p.get("ml", 0) or 0), float(p.get("s", 0) or 0)
+            if s > 0:
+                jobs[ch] = (ml, s)
+        if not jobs:
+            return
+        duration = max(s for _, s in jobs.values())
+        running: set = set()
 
-        while elapsed < s:
+        def start(ch: str, elapsed: float) -> None:
+            ml, s = jobs[ch]
+            remaining_s = s - elapsed
+            hardware.start_pump(ch, ml * remaining_s / s, remaining_s)
+            running.add(ch)
+
+        for ch in jobs:
+            start(ch, 0.0)
+
+        elapsed, last, paused = 0.0, time.monotonic(), False
+        while elapsed < duration:
             if self._stop_event.is_set():
-                hardware.stop_pump(channel)
+                for ch in running:
+                    hardware.stop_pump(ch)
                 return
-
-            if self._pause_event.is_set() and not self._current_block_paused:
-                hardware.stop_pump(channel)
-                self._current_block_paused = True
+            if self._pause_event.is_set() and not paused:
+                for ch in running:
+                    hardware.stop_pump(ch)
+                running.clear()
+                paused = True
                 self._emit_event({"type": "status", "status": "paused"})
-
-            if self._current_block_paused:
-                if self._resume_event.is_set():
-                    # Restart with remaining time pro-rata
-                    remaining_s = s - elapsed
-                    remaining_ml = ml * (remaining_s / s) if s > 0 else 0
-                    hardware.start_pump(channel, remaining_ml, remaining_s)
-                    self._current_block_paused = False
-                    self._resume_event.clear()
-                    self._emit_event({"type": "status", "status": self._active_status})
-                    self._current_block_start_time = time.time()
-                    s, ml = remaining_s, remaining_ml
-                    elapsed = 0
+            if paused:
+                if not self._resume_event.is_set():
+                    time.sleep(0.05)
                     continue
-                time.sleep(step)
-            else:
-                time.sleep(step)
-                elapsed += step
+                self._resume_event.clear()
+                paused = False
+                self._emit_event({"type": "status", "status": self._active_status})
+                for ch, (_, s) in jobs.items():
+                    if s > elapsed:
+                        start(ch, elapsed)
+                last = time.monotonic()
+            elapsed, last = self._wait_step(elapsed, last)
+            for ch in list(running):
+                if elapsed >= jobs[ch][1]:
+                    hardware.stop_pump(ch)
+                    running.discard(ch)
 
-        hardware.stop_pump(channel)
+        for ch in running:
+            hardware.stop_pump(ch)
 
     def _run_pause_block(self, s: float) -> None:
-        """Run a pause block, checking for pause/stop in ≤50 ms steps."""
-        elapsed = 0.0
-        step = 0.05  # 50 ms
-
+        """Wait s seconds (not counting time spent paused), checking pause/stop."""
+        elapsed, last, paused = 0.0, time.monotonic(), False
         while elapsed < s:
             if self._stop_event.is_set():
                 return
-
-            if self._pause_event.is_set() and not self._current_block_paused:
-                self._current_block_paused = True
+            if self._pause_event.is_set() and not paused:
+                paused = True
                 self._emit_event({"type": "status", "status": "paused"})
-
-            if self._current_block_paused:
-                if self._resume_event.is_set():
-                    remaining_s = s - elapsed
-                    self._current_block_paused = False
-                    self._resume_event.clear()
-                    self._emit_event({"type": "status", "status": self._active_status})
-                    self._current_block_start_time = time.time()
-                    s = remaining_s
-                    elapsed = 0
+            if paused:
+                if not self._resume_event.is_set():
+                    time.sleep(0.05)
                     continue
-                time.sleep(step)
-            else:
-                time.sleep(step)
-                elapsed += step
+                self._resume_event.clear()
+                paused = False
+                self._emit_event({"type": "status", "status": self._active_status})
+                last = time.monotonic()
+            elapsed, last = self._wait_step(elapsed, last)
 
     def run_program(self, blocks: List[Dict[str, Any]], repeat: int) -> Dict[str, Any]:
         """Run a program with the given blocks and repetition count."""
@@ -191,7 +207,6 @@ class Api:
             self._stop_event.clear()
             self._pause_event.clear()
             self._resume_event.clear()
-            self._current_block_paused = False
 
             self._runner_thread = threading.Thread(
                 target=self._run_program_impl,
@@ -239,7 +254,7 @@ class Api:
                     self._active_status = "pouring"
                     self._emit_event({"type": "status", "status": "pouring"})
                     self._emit_event({"type": "pour_start", "ml": ml, "s": s})
-                    self._run_pump_block("D", ml, s)
+                    self._run_pump_block({"D": {"ml": ml, "s": s}})
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "status", "status": "done"})
                 except Exception as e:
@@ -251,14 +266,24 @@ class Api:
 
         return {"ok": True}
 
+    def _busy(self) -> bool:
+        return self._runner_thread is not None and self._runner_thread.is_alive()
+
     def manual_pump_start(self, channel: str) -> Dict[str, Any]:
-        """Start a manual pump on the given channel (runs until stopped)."""
+        """Start a manual pump on the given channel (runs until stopped).
+        Refused while a program or pour is running, so it can't fight the runner."""
+        if self._busy():
+            return {"ok": False, "error": "Busy running a program"}
         hardware.start_pump(channel, 0, 0)
+        self._manual_channels.add(channel)
         self._emit_event({"type": "manual", "channel": channel, "active": True})
         return {"ok": True}
 
     def manual_pump_stop(self, channel: str) -> Dict[str, Any]:
         """Stop a manual pump on the given channel."""
+        if channel not in self._manual_channels:
+            return {"ok": False}
+        self._manual_channels.discard(channel)
         hardware.stop_pump(channel)
         self._emit_event({"type": "manual", "channel": channel, "active": False})
         return {"ok": True}

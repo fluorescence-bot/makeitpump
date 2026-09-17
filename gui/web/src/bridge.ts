@@ -19,7 +19,7 @@ export function isMock(): boolean {
 class MockBackend implements BackendApi {
   private running = false;
   private paused = false;
-  private pausedBlock: { remaining_ml: number; remaining_s: number } | null = null;
+  private pausedAt = 0;
 
   async run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }> {
     if (this.running) {
@@ -28,6 +28,7 @@ class MockBackend implements BackendApi {
 
     this.running = true;
     this.paused = false;
+    this.pausedAt = 0;
     emitEvent({ type: "status", status: "raining" });
 
     const total_steps = blocks.length * repeat;
@@ -42,45 +43,43 @@ class MockBackend implements BackendApi {
           emitEvent({ type: "block_start", index: i, repeat: r, block });
 
           if (block.type === "pump") {
-            let ml = block.ml;
-            let s = block.s;
+            // Calculate max duration across all channels
+            let maxDuration = 0;
+            (Object.keys(block.pumps) as Array<keyof typeof block.pumps>).forEach((ch) => {
+              const s = block.pumps[ch].s;
+              if (s > maxDuration) maxDuration = s;
+            });
 
-            if (this.pausedBlock) {
-              ml = this.pausedBlock.remaining_ml;
-              s = this.pausedBlock.remaining_s;
-              this.pausedBlock = null;
-            }
-
-            const start = Date.now();
-            const duration = s * 1000;
+            const duration = maxDuration * 1000;
+            let start = Date.now();
 
             while (this.running && Date.now() - start < duration) {
               if (this.paused) {
-                const elapsed = Date.now() - start;
-                this.pausedBlock = {
-                  remaining_ml: ml * (1 - elapsed / duration),
-                  remaining_s: (duration - elapsed) / 1000,
-                };
+                this.pausedAt = Date.now();
                 emitEvent({ type: "status", status: "paused" });
                 while (this.paused && this.running) {
                   await new Promise(r => setTimeout(r, 50));
                 }
                 if (!this.running) break;
+                // Shift the start time to account for pause duration
+                start += Date.now() - this.pausedAt;
                 emitEvent({ type: "status", status: "raining" });
               }
               await new Promise(r => setTimeout(r, 50));
             }
           } else if (block.type === "pause") {
-            const start = Date.now();
             const duration = block.s * 1000;
+            let start = Date.now();
 
             while (this.running && Date.now() - start < duration) {
               if (this.paused) {
+                this.pausedAt = Date.now();
                 emitEvent({ type: "status", status: "paused" });
                 while (this.paused && this.running) {
                   await new Promise(r => setTimeout(r, 50));
                 }
                 if (!this.running) break;
+                start += Date.now() - this.pausedAt;
                 emitEvent({ type: "status", status: "raining" });
               }
               await new Promise(r => setTimeout(r, 50));
@@ -102,7 +101,7 @@ class MockBackend implements BackendApi {
     } finally {
       this.running = false;
       this.paused = false;
-      this.pausedBlock = null;
+      this.pausedAt = 0;
     }
 
     return { ok: true };
@@ -127,7 +126,7 @@ class MockBackend implements BackendApi {
   async stop(): Promise<{ ok: boolean }> {
     this.running = false;
     this.paused = false;
-    this.pausedBlock = null;
+    this.pausedAt = 0;
     emitEvent({ type: "status", status: "stopped" });
     return { ok: true };
   }
@@ -161,6 +160,9 @@ class MockBackend implements BackendApi {
   }
 
   async manual_pump_start(channel: Channel): Promise<{ ok: boolean }> {
+    if (this.running) {
+      return { ok: false };
+    }
     emitEvent({ type: "manual", channel, active: true });
     return { ok: true };
   }
@@ -260,11 +262,37 @@ function seedExamplePreset(): void {
         name: "Example",
         solutions: { A: "Milk", B: "Water", C: "NaOH", D: "Final mix" },
         blocks: [
-          { id: "1", type: "pump" as const, channel: "A" as const, ml: 5, s: 10 },
-          { id: "2", type: "pause" as const, s: 5 },
-          { id: "3", type: "pump" as const, channel: "B" as const, ml: 3, s: 6 },
-          { id: "4", type: "pump" as const, channel: "C" as const, ml: 1, s: 4 },
-          { id: "5", type: "pump" as const, channel: "D" as const, ml: 9, s: 15 },
+          {
+            id: "b1",
+            type: "pump" as const,
+            pumps: {
+              A: { ml: 5, s: 10 },
+              B: { ml: 3, s: 6 },
+              C: { ml: 0, s: 0 },
+              D: { ml: 0, s: 0 },
+            },
+          },
+          { id: "b2", type: "pause" as const, s: 5 },
+          {
+            id: "b3",
+            type: "pump" as const,
+            pumps: {
+              A: { ml: 0, s: 0 },
+              B: { ml: 0, s: 0 },
+              C: { ml: 1, s: 4 },
+              D: { ml: 0, s: 0 },
+            },
+          },
+          {
+            id: "b4",
+            type: "pump" as const,
+            pumps: {
+              A: { ml: 0, s: 0 },
+              B: { ml: 0, s: 0 },
+              C: { ml: 0, s: 0 },
+              D: { ml: 9, s: 15 },
+            },
+          },
         ],
         repeat: 1,
       };
@@ -275,34 +303,25 @@ function seedExamplePreset(): void {
   }
 }
 
+// Python pushes events by calling window.__onBackendEvent(...). Install it right away
+// so no event is lost, whether we end up on the real backend or the mock.
+(window as any).__onBackendEvent = (e: BackendEvent) => emitEvent(e);
+
 export async function getApi(): Promise<BackendApi> {
-  return new Promise((resolve) => {
-    // Try to detect pywebview
-    if (typeof (window as any).pywebview !== "undefined" && (window as any).pywebview.api) {
-      const timeout = setTimeout(() => {
-        mockMode = true;
-        seedExamplePreset();
-        resolve(mockApi);
-      }, 800);
-
-      (window as any).pywebview.api.ready = () => {
-        clearTimeout(timeout);
-        mockMode = false;
-
-        // Wrap the real API to set up event listening
-        const realApi = (window as any).pywebview.api;
-        (window as any).__onBackendEvent = (e: BackendEvent) => {
-          emitEvent(e);
-        };
-
-        resolve(realApi);
-      };
-
-      (window as any).pywebview.api.ready();
-    } else {
-      mockMode = true;
-      seedExamplePreset();
-      resolve(mockApi);
-    }
-  });
+  const w = window as any;
+  const hasPywebview = () => !!(w.pywebview && w.pywebview.api && typeof w.pywebview.api.run_program === "function");
+  if (!hasPywebview()) {
+    // pywebview injects its API shortly after page load and fires 'pywebviewready'
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3000);
+      window.addEventListener("pywebviewready", () => { clearTimeout(timer); resolve(); }, { once: true });
+    });
+  }
+  if (hasPywebview()) {
+    mockMode = false;
+    return w.pywebview.api as BackendApi;
+  }
+  mockMode = true;
+  seedExamplePreset();
+  return mockApi;
 }

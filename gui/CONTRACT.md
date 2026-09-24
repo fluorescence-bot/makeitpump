@@ -54,7 +54,8 @@ export interface Preset {
   repeat: number;                        // >= 1
 }
 
-export type RunStatus = "ready" | "raining" | "paused" | "pouring" | "done" | "stopped" | "error";
+export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "done" | "stopped" | "error";
+export type PumpSource = "program" | "manual";
 
 // Events pushed from backend -> UI
 export type BackendEvent =
@@ -62,17 +63,15 @@ export type BackendEvent =
   | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
-  | { type: "pour_start"; ml: number; s: number }
-  | { type: "manual"; channel: Channel; active: boolean };
+  | { type: "dose_start"; channel: Channel; ml: number; s: number }         // a manual click started
+  | { type: "pumped"; channel: Channel; ml: number; source: PumpSource };    // mL actually delivered (pro-rata if stopped)
 
 export interface BackendApi {
   run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }>;
   pause_run(): Promise<{ ok: boolean }>;
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
-  pour(ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
-  manual_pump_start(channel: Channel): Promise<{ ok: boolean }>;
-  manual_pump_stop(channel: Channel): Promise<{ ok: boolean }>;
+  manual_dose(channel: Channel, ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
   save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.yaml
@@ -99,8 +98,8 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 - A pause block waits `s` seconds, checking stop/pause the same way.
 - Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining ml/s pro-rata (re-emitting `block_start` with the remaining block values is fine).
 - Stop: `hardware.stop_all()`, status `stopped`.
-- `pour(ml, s)`: same as a pump block on channel D, but emits `pour_start` and status `pouring`, then `done`.
-- Manual: refused while a program or pour is running. Otherwise calls `hardware.start_pump`/`stop_pump` with ml=0, s=0 (meaning "run until stopped") and emits a `manual` event.
+- Every pump block (program or manual) ends by emitting one `pumped` event per channel with `s > 0` and delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
+- `manual_dose(channel, ml, s)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
 ## hardware.py (stubs for the backend team)
 ```python
@@ -120,11 +119,14 @@ export interface Scene {
   startPour(ml: number, s: number): void;                            // bowl drains ml over s sec into final cup
   setPaused(paused: boolean): void;                                  // freeze/unfreeze running animations
   stopAll(): void;                                                   // end all animations now (volumes stay)
-  setManual(ch: Channel, active: boolean): void;                     // visual rain/drip while held
-  onManualPress(cb: (ch: Channel, active: boolean) => void): void;   // press-and-hold (>=300 ms) on a cloud or bowl
+  onDose(cb: (ch: Channel, ml: number) => void): void;               // click on a cloud (A/B/C) or the bowl (D); ml = that channel's mL-per-click field
+  setTotals(totals: Record<Channel, number>): void;                  // session mL shown above each cloud and the funnel
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
 }
 export function createScene(container: HTMLElement): Scene;
 ```
-Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each of A/B/C with s > 0 and `startPour(ml, s)` for D with s > 0.
+Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each of A/B/C with s > 0 and `startPour(ml, s)` for D with s > 0. On `dose_start` it does the same for the one dosed channel.
+
+## Session log
+The UI keeps a per-session log of every `pumped` event and shows running totals per channel A–D (manual and program) above each cloud and the funnel, so the user can work backwards from a result (e.g. a target pH) to how much of each liquid it took. The log can be reset and copied as CSV.

@@ -5,9 +5,9 @@ These tests verify:
 - Multi-channel pump block execution and event ordering
 - Pause/resume with pro-rata remaining time
 - Stop behavior and concurrent run prevention
-- Manual pump control (rejected during run, allowed when idle)
+- Manual dosing (fixed mL per click, rejected while busy, partial on stop)
+- `pumped` events for the session log
 - Preset round-trip (save, list, load)
-- Pour operation with correct events
 - Repeat logic
 """
 
@@ -404,133 +404,139 @@ class TestPauseResume:
                 assert abs(original_rate - resumed_rate) < 0.01  # Small tolerance
 
 
-class TestManualPump:
-    """Tests for manual pump control."""
+class TestManualDose:
+    """Tests for manual dosing (one click = fixed mL)."""
 
-    def test_manual_pump_start_stop_idle(self, api_instance, fake_window, mock_hardware):
-        """Manual pump should work when idle."""
-        result_start = api_instance.manual_pump_start("A")
-        assert result_start["ok"] is True
-
-        # Check that manual event was emitted
-        manual_events = [e for e in fake_window.events if e["type"] == "manual" and e["channel"] == "A"]
-        assert any(e["active"] is True for e in manual_events)
-
-        # Check hardware.start_pump was called with 0, 0 (run indefinitely)
-        starts = [call for call in mock_hardware["start_pump"] if call[0] == "A"]
-        assert len(starts) >= 1
-
-        # Stop manual pump
-        result_stop = api_instance.manual_pump_stop("A")
-        assert result_stop["ok"] is True
-
-        # Check that manual event was emitted for stop
-        manual_events = [e for e in fake_window.events if e["type"] == "manual" and e["channel"] == "A"]
-        assert any(e["active"] is False for e in manual_events)
-
-    def test_manual_pump_rejected_during_run(self, api_instance, mock_hardware):
-        """Manual pump should be rejected while a program is running."""
-        blocks = [
-            {
-                "id": "b1",
-                "type": "pump",
-                "pumps": {
-                    "A": {"ml": 1, "s": 1},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
-                },
-            }
-        ]
-
-        api_instance.run_program(blocks, 1)
-        time.sleep(0.05)  # Let it start
-
-        # Try manual pump
-        result = api_instance.manual_pump_start("B")
-        assert result["ok"] is False
-        assert "Busy" in result.get("error", "")
-
-        api_instance.stop()
-        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
-
-    def test_manual_pump_rejected_during_pour(self, api_instance, mock_hardware):
-        """Manual pump should be rejected while pouring."""
-        api_instance.pour(10, 1)
-        time.sleep(0.05)  # Let it start
-
-        result = api_instance.manual_pump_start("A")
-        assert result["ok"] is False
-        assert "Busy" in result.get("error", "")
-
-        api_instance.stop()
-        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
-
-
-class TestPour:
-    """Tests for pour functionality."""
-
-    def test_pour_emits_events(self, api_instance, fake_window, mock_hardware):
-        """Pour should emit pour_start, status, and complete."""
-        result = api_instance.pour(10, 0.2)
+    def test_dose_pumps_fixed_amount(self, api_instance, fake_window, mock_hardware):
+        """A dose starts the pump with the given mL/s and reports the full mL."""
+        result = api_instance.manual_dose("A", 2.5, 0.1)
         assert result["ok"] is True
+        assert wait_for_thread(api_instance._runner_thread)
 
-        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+        assert mock_hardware["start_pump"] == [("A", 2.5, 0.1)]
+        assert mock_hardware["stop_pump"] == ["A"]
 
-        events = fake_window.events
+        assert fake_window.events[0] == {"type": "status", "status": "dosing"}
+        assert any(e["type"] == "dose_start" for e in fake_window.events)
 
-        # Check pour_start
-        pour_starts = [e for e in events if e["type"] == "pour_start"]
-        assert len(pour_starts) == 1
-        assert pour_starts[0]["ml"] == 10
-        assert pour_starts[0]["s"] == 0.2
+        pumped = [e for e in fake_window.events if e["type"] == "pumped"]
+        assert pumped == [{"type": "pumped", "channel": "A", "ml": 2.5, "source": "manual"}]
+        assert fake_window.events[-1] == {"type": "status", "status": "ready"}
 
-        # Check status: pouring (should come after pour_start)
-        pour_status_idx = None
-        pour_start_idx = None
-        for i, e in enumerate(events):
-            if e["type"] == "pour_start":
-                pour_start_idx = i
-            if e["type"] == "status" and e["status"] == "pouring":
-                pour_status_idx = i
-                break
-
-        # pour_start should come before pouring status
-        if pour_start_idx is not None and pour_status_idx is not None:
-            assert pour_start_idx < pour_status_idx
-
-        # Check final status: done
-        dones = [e for e in events if e["type"] == "status" and e["status"] == "done"]
-        assert len(dones) >= 1
-
-        # Check that D pump was started
-        d_starts = [call for call in mock_hardware["start_pump"] if call[0] == "D"]
-        assert len(d_starts) == 1
-
-    def test_pour_rejected_during_run(self, api_instance, mock_hardware):
-        """Pour should be rejected while a program is running."""
-        blocks = [
-            {
-                "id": "b1",
-                "type": "pump",
-                "pumps": {
-                    "A": {"ml": 1, "s": 1},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
-                },
-            }
-        ]
-
-        api_instance.run_program(blocks, 1)
+    def test_dose_rejected_while_dosing(self, api_instance, mock_hardware):
+        """A second click while a dose runs is refused."""
+        assert api_instance.manual_dose("A", 1, 1)["ok"] is True
         time.sleep(0.05)
 
-        result = api_instance.pour(5, 0.5)
+        result = api_instance.manual_dose("B", 1, 1)
         assert result["ok"] is False
-        assert "already running" in result.get("error", "").lower()
+        assert "Busy" in result.get("error", "")
 
         api_instance.stop()
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+    def test_dose_rejected_during_run(self, api_instance, mock_hardware):
+        """A dose is refused while a program is running."""
+        blocks = [
+            {
+                "id": "b1",
+                "type": "pump",
+                "pumps": {
+                    "A": {"ml": 1, "s": 1},
+                    "B": {"ml": 0, "s": 0},
+                    "C": {"ml": 0, "s": 0},
+                    "D": {"ml": 0, "s": 0},
+                },
+            }
+        ]
+
+        api_instance.run_program(blocks, 1)
+        time.sleep(0.05)  # Let it start
+
+        result = api_instance.manual_dose("B", 1, 0.5)
+        assert result["ok"] is False
+        assert "Busy" in result.get("error", "")
+
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+    def test_run_rejected_during_dose(self, api_instance, mock_hardware):
+        """A program cannot start while a dose runs."""
+        api_instance.manual_dose("A", 1, 1)
+        time.sleep(0.05)
+
+        result = api_instance.run_program([{"id": "b1", "type": "pause", "s": 0.1}], 1)
+        assert result["ok"] is False
+
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+    def test_stopped_dose_reports_partial_ml(self, api_instance, fake_window, mock_hardware):
+        """Stopping mid-dose logs only what was actually pumped."""
+        api_instance.manual_dose("C", 10, 1.0)
+        time.sleep(0.3)
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+        pumped = [e for e in fake_window.events if e["type"] == "pumped"]
+        assert len(pumped) == 1
+        assert pumped[0]["channel"] == "C"
+        assert pumped[0]["source"] == "manual"
+        assert 1.0 < pumped[0]["ml"] < 6.0
+
+    @pytest.mark.parametrize("ml, s", [(0, 1), (1, 0), (-1, 1)])
+    def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml, s):
+        """Zero or negative mL/s are refused without touching the pump."""
+        assert api_instance.manual_dose("A", ml, s)["ok"] is False
+        assert mock_hardware["start_pump"] == []
+
+
+class TestPumpedEvents:
+    """Program blocks also report what they pumped, for the session log."""
+
+    def test_program_reports_pumped_per_channel(self, api_instance, fake_window, mock_hardware):
+        blocks = [
+            {
+                "id": "b1",
+                "type": "pump",
+                "pumps": {
+                    "A": {"ml": 3, "s": 0.1},
+                    "B": {"ml": 0, "s": 0},
+                    "C": {"ml": 0, "s": 0},
+                    "D": {"ml": 1, "s": 0.05},
+                },
+            }
+        ]
+        api_instance.run_program(blocks, 2)
+        assert wait_for_thread(api_instance._runner_thread)
+
+        pumped = [e for e in fake_window.events if e["type"] == "pumped"]
+        assert all(e["source"] == "program" for e in pumped)
+        assert sum(e["ml"] for e in pumped if e["channel"] == "A") == pytest.approx(6)
+        assert sum(e["ml"] for e in pumped if e["channel"] == "D") == pytest.approx(2)
+        assert not any(e["channel"] in ("B", "C") for e in pumped)
+
+    def test_stopped_program_reports_partial(self, api_instance, fake_window, mock_hardware):
+        blocks = [
+            {
+                "id": "b1",
+                "type": "pump",
+                "pumps": {
+                    "A": {"ml": 10, "s": 1.0},
+                    "B": {"ml": 0, "s": 0},
+                    "C": {"ml": 0, "s": 0},
+                    "D": {"ml": 0, "s": 0},
+                },
+            }
+        ]
+        api_instance.run_program(blocks, 1)
+        time.sleep(0.3)
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+        pumped = [e for e in fake_window.events if e["type"] == "pumped"]
+        assert len(pumped) == 1
+        assert 1.0 < pumped[0]["ml"] < 6.0
 
 
 class TestRepeat:

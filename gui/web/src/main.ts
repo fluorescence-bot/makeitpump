@@ -7,6 +7,7 @@ import { getApi, onEvent, isMock } from "./bridge";
 import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
+import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
 import type { BackendApi, BackendEvent, Block, Preset, Channel, RunStatus } from "./types";
 
 // Global state
@@ -18,8 +19,13 @@ let currentPreset: Preset = {
   repeat: 1,
 };
 
+// Pump speed used to turn a manual dose (mL) into a duration. Set to the real pump rate.
+const PUMP_RATE_ML_PER_S = 1;
+
 let isRunning = false;
 let currentStatus: RunStatus = "ready";
+// Everything pumped this session (manual clicks and program blocks), from `pumped` events
+const sessionLog: LogEntry[] = [];
 
 // Initialize app
 async function init(): Promise<void> {
@@ -75,6 +81,18 @@ async function init(): Promise<void> {
   `;
   programPanel.appendChild(repeatControl);
 
+  const sessionPanel = document.createElement("div");
+  sessionPanel.className = "session-log";
+  sessionPanel.innerHTML = `
+    <div class="session-log-header">
+      <span class="session-log-title">Session log</span>
+      <button id="btn-log-copy" class="btn btn-small" title="Copy the log as CSV">📋 Copy CSV</button>
+      <button id="btn-log-reset" class="btn btn-small">↺ Reset</button>
+    </div>
+    <ol id="session-entries" class="session-entries"></ol>
+  `;
+  programPanel.appendChild(sessionPanel);
+
   main.appendChild(programPanel);
   app.appendChild(main);
 
@@ -86,13 +104,6 @@ async function init(): Promise<void> {
       <button id="btn-rain" class="big-btn rain">🌧️ Make it RAIN!</button>
       <button id="btn-pause" class="big-btn">⏸ Pause</button>
       <button id="btn-stop" class="big-btn stop">■ Stop</button>
-      <button id="btn-pour" class="big-btn pour">Make it POUR! 🫗</button>
-      <div class="pour-inputs">
-        <input id="pour-ml" type="number" placeholder="mL" step="0.1" min="0">
-        <span>mL</span>
-        <input id="pour-s" type="number" value="10" placeholder="s" step="0.5" min="0">
-        <span>s</span>
-      </div>
     </div>
     <div class="control-group">
       <div id="status-pill" class="status-pill status-ready">Ready</div>
@@ -169,16 +180,38 @@ async function init(): Promise<void> {
     const repeatInput = document.getElementById("repeat-input") as HTMLInputElement;
     repeatInput.value = String(currentPreset.repeat);
     updateProgramInfo();
-    updatePourDefaults();
+    renderSessionLog();
   }
 
-  function updatePourDefaults(): void {
-    const bowl = scene.getBowl();
-    const pourMl = document.getElementById("pour-ml") as HTMLInputElement;
-    if (document.activeElement !== pourMl) pourMl.value = bowl.total.toFixed(1);
+  function renderSessionLog(): void {
+    const names = currentPreset.solutions;
+    const totals = sessionTotals(sessionLog);
+    scene.setTotals({ A: totals.A.total, B: totals.B.total, C: totals.C.total, D: totals.D.total });
+    const list = document.getElementById("session-entries")!;
+    list.innerHTML = "";
+    for (const e of [...sessionLog].reverse()) {
+      const li = document.createElement("li");
+      li.textContent = `${e.time.toLocaleTimeString()}  ${e.channel} ${names[e.channel]}  +${e.ml.toFixed(2)} mL  (${e.source})`;
+      list.appendChild(li);
+    }
   }
-  // keep the POUR amount in sync with what is in the bowl
-  setInterval(updatePourDefaults, 500);
+
+  document.getElementById("btn-log-reset")!.onclick = () => {
+    if (sessionLog.length && !confirm("Clear the session log?")) return;
+    sessionLog.length = 0;
+    renderSessionLog();
+  };
+
+  document.getElementById("btn-log-copy")!.onclick = async () => {
+    const btn = document.getElementById("btn-log-copy")!;
+    try {
+      await navigator.clipboard.writeText(sessionCsv(sessionLog, currentPreset.solutions));
+      btn.textContent = "✓ Copied";
+    } catch {
+      btn.textContent = "Copy failed";
+    }
+    setTimeout(() => (btn.textContent = "📋 Copy CSV"), 1500);
+  };
 
   // Header buttons
   document.getElementById("preset-select")!.onchange = async (e) => {
@@ -266,21 +299,22 @@ async function init(): Promise<void> {
   scene.onNameChange((ch: Channel, name: string) => {
     currentPreset.solutions[ch] = name;
     blocksEditor.refreshNames();
+    renderSessionLog();
   });
 
-  // Manual pump control
-  scene.onManualPress(async (ch: Channel, active: boolean) => {
-    // Ignore if a program or pour is running
-    if (currentStatus === "raining" || currentStatus === "pouring" || currentStatus === "paused") {
-      return;
-    }
-    if (active) {
-      const result = await api.manual_pump_start(ch);
-      if (!result.ok) {
-        return;
-      }
-    } else {
-      await api.manual_pump_stop(ch);
+  function showStatusError(message: string): void {
+    const statusPill = document.getElementById("status-pill")!;
+    statusPill.textContent = message;
+    statusPill.className = "status-pill status-error";
+    statusPill.title = message;
+  }
+
+  // Manual dosing: each click pumps that channel's mL-per-click; the backend reports what was delivered
+  scene.onDose(async (ch: Channel, ml: number) => {
+    const result = await api.manual_dose(ch, ml, ml / PUMP_RATE_ML_PER_S);
+    if (!result.ok) {
+      // e.g. still busy with the previous click; this click is not pumped or logged
+      showStatusError(result.error || "Busy");
     }
   });
 
@@ -315,10 +349,7 @@ async function init(): Promise<void> {
 
     const validation = validateBlocks(blocks);
     if (!validation.ok) {
-      const statusPill = document.getElementById("status-pill")!;
-      statusPill.textContent = validation.message || "Invalid";
-      statusPill.className = "status-pill status-error";
-      statusPill.title = validation.message || "Invalid block";
+      showStatusError(validation.message || "Invalid block");
       return;
     }
 
@@ -344,29 +375,6 @@ async function init(): Promise<void> {
     await api.stop();
   };
 
-  document.getElementById("btn-pour")!.onclick = async () => {
-    const mlInput = document.getElementById("pour-ml") as HTMLInputElement;
-    const sInput = document.getElementById("pour-s") as HTMLInputElement;
-
-    let ml = parseFloat(mlInput.value);
-    if (isNaN(ml)) {
-      const bowl = scene.getBowl();
-      ml = bowl.total;
-    }
-
-    const s = parseFloat(sInput.value) || 15;
-
-    if (ml <= 0 || s <= 0) {
-      alert("Enter valid mL and seconds");
-      return;
-    }
-
-    const result = await api.pour(ml, s);
-    if (!result.ok) {
-      alert(`Error: ${result.error}`);
-    }
-  };
-
   // Repeat input change
   (document.getElementById("repeat-input") as HTMLInputElement).onchange = (e) => {
     const val = parseInt((e.target as HTMLInputElement).value) || 1;
@@ -381,14 +389,13 @@ async function init(): Promise<void> {
     const rainBtn = document.getElementById("btn-rain") as HTMLButtonElement;
     const pauseBtn = document.getElementById("btn-pause") as HTMLButtonElement;
     const stopBtn = document.getElementById("btn-stop") as HTMLButtonElement;
-    const pourBtn = document.getElementById("btn-pour") as HTMLButtonElement;
 
     if (event.type === "status") {
       const status = event.status;
       currentStatus = status;
       statusPill.textContent = status === "raining" ? "Raining..." :
                                 status === "paused" ? "Paused" :
-                                status === "pouring" ? "Pouring..." :
+                                status === "dosing" ? "Dosing..." :
                                 status === "done" ? "Done ✨" :
                                 status === "stopped" ? "Stopped" :
                                 status === "error" ? "Error" :
@@ -396,14 +403,13 @@ async function init(): Promise<void> {
 
       statusPill.className = `status-pill status-${status}`;
 
-      const running = status === "raining" || status === "pouring";
+      const running = status === "raining" || status === "dosing";
       const paused = status === "paused";
 
       rainBtn.disabled = running || paused;
       pauseBtn.textContent = paused ? "▶ Resume" : "⏸ Pause";
       pauseBtn.disabled = !running && !paused;
       stopBtn.disabled = !running && !paused;
-      pourBtn.disabled = running || paused;
 
       blocksEditor.setLocked(running || paused);
 
@@ -445,10 +451,12 @@ async function init(): Promise<void> {
       // Block ended
     } else if (event.type === "progress") {
       progressFill.style.width = `${event.fraction * 100}%`;
-    } else if (event.type === "pour_start") {
-      scene.startPour(event.ml, event.s);
-    } else if (event.type === "manual") {
-      scene.setManual(event.channel, event.active);
+    } else if (event.type === "dose_start") {
+      if (event.channel === "D") scene.startPour(event.ml, event.s);
+      else scene.startRain(event.channel, event.ml, event.s);
+    } else if (event.type === "pumped") {
+      sessionLog.push({ time: new Date(), channel: event.channel, ml: event.ml, source: event.source });
+      renderSessionLog();
     }
   });
 

@@ -1,4 +1,4 @@
-import type { BackendApi, BackendEvent, Block, Preset, Channel, RunStatus } from "./types";
+import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpSource, RunStatus } from "./types";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
 let mockMode = false;
@@ -162,6 +162,7 @@ class MockBackend implements BackendApi {
   private running = false;
   private paused = false;
   private pausedAt = 0;
+  private activeStatus: RunStatus = "raining";
 
   async run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }> {
     if (this.running) {
@@ -171,6 +172,7 @@ class MockBackend implements BackendApi {
     this.running = true;
     this.paused = false;
     this.pausedAt = 0;
+    this.activeStatus = "raining";
     emitEvent({ type: "status", status: "raining" });
 
     const total_steps = blocks.length * repeat;
@@ -185,30 +187,7 @@ class MockBackend implements BackendApi {
           emitEvent({ type: "block_start", index: i, repeat: r, block });
 
           if (block.type === "pump") {
-            // Calculate max duration across all channels
-            let maxDuration = 0;
-            (Object.keys(block.pumps) as Array<keyof typeof block.pumps>).forEach((ch) => {
-              const s = block.pumps[ch].s;
-              if (s > maxDuration) maxDuration = s;
-            });
-
-            const duration = maxDuration * 1000;
-            let start = Date.now();
-
-            while (this.running && Date.now() - start < duration) {
-              if (this.paused) {
-                this.pausedAt = Date.now();
-                emitEvent({ type: "status", status: "paused" });
-                while (this.paused && this.running) {
-                  await new Promise(r => setTimeout(r, 50));
-                }
-                if (!this.running) break;
-                // Shift the start time to account for pause duration
-                start += Date.now() - this.pausedAt;
-                emitEvent({ type: "status", status: "raining" });
-              }
-              await new Promise(r => setTimeout(r, 50));
-            }
+            await this.runPumpBlock(block.pumps, "program");
           } else if (block.type === "pause") {
             const duration = block.s * 1000;
             let start = Date.now();
@@ -249,6 +228,36 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
+  // Mirrors Api._run_pump_block: waits max(s) (not counting paused time), then
+  // emits one `pumped` event per channel with the mL actually delivered.
+  private async runPumpBlock(pumps: Partial<Record<Channel, ChannelPump>>, source: PumpSource): Promise<void> {
+    const jobs = (Object.keys(pumps) as Channel[])
+      .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumps[ch]!.s }))
+      .filter((j) => j.s > 0);
+    if (!jobs.length) return;
+    const duration = Math.max(...jobs.map((j) => j.s)) * 1000;
+    let start = Date.now();
+    while (this.running && Date.now() - start < duration) {
+      if (this.paused) {
+        this.pausedAt = Date.now();
+        emitEvent({ type: "status", status: "paused" });
+        while (this.paused && this.running) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+        // Shift the start time to account for pause duration
+        start += Date.now() - this.pausedAt;
+        if (!this.running) break;
+        emitEvent({ type: "status", status: this.activeStatus });
+      }
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const elapsed = (Date.now() - start) / 1000;
+    for (const j of jobs) {
+      const ml = elapsed >= j.s ? j.ml : (j.ml * elapsed) / j.s;
+      if (ml > 0) emitEvent({ type: "pumped", channel: j.ch, ml, source });
+    }
+  }
+
   async pause_run(): Promise<{ ok: boolean }> {
     if (!this.running || this.paused) {
       return { ok: false };
@@ -273,44 +282,31 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
-  async pour(ml: number, s: number): Promise<{ ok: boolean; error?: string }> {
+  async manual_dose(channel: Channel, ml: number, s: number): Promise<{ ok: boolean; error?: string }> {
+    if (ml <= 0 || s <= 0) {
+      return { ok: false, error: "Dose needs mL > 0 and s > 0" };
+    }
     if (this.running) {
-      return { ok: false, error: "Program already running" };
+      return { ok: false, error: "Busy" };
     }
 
     this.running = true;
     this.paused = false;
-    emitEvent({ type: "status", status: "pouring" });
-    emitEvent({ type: "pour_start", ml, s });
+    this.activeStatus = "dosing";
+    emitEvent({ type: "status", status: "dosing" });
+    emitEvent({ type: "dose_start", channel, ml, s });
 
-    const start = Date.now();
-    const duration = s * 1000;
-
-    try {
-      while (this.running && Date.now() - start < duration) {
-        await new Promise(r => setTimeout(r, 50));
+    // Like the Python runner, the call returns right away and the dose runs in the background.
+    (async () => {
+      try {
+        await this.runPumpBlock({ [channel]: { ml, s } }, "manual");
+        if (this.running) emitEvent({ type: "status", status: "ready" });
+      } finally {
+        this.running = false;
+        this.paused = false;
       }
+    })();
 
-      if (this.running) {
-        emitEvent({ type: "status", status: "done" });
-      }
-    } finally {
-      this.running = false;
-    }
-
-    return { ok: true };
-  }
-
-  async manual_pump_start(channel: Channel): Promise<{ ok: boolean }> {
-    if (this.running) {
-      return { ok: false };
-    }
-    emitEvent({ type: "manual", channel, active: true });
-    return { ok: true };
-  }
-
-  async manual_pump_stop(channel: Channel): Promise<{ ok: boolean }> {
-    emitEvent({ type: "manual", channel, active: false });
     return { ok: true };
   }
 

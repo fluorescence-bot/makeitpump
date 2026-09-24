@@ -205,28 +205,50 @@ describe("bridge mock", () => {
     });
   });
 
-  describe("pour", () => {
-    it("emits correct event order", async () => {
+  describe("manual dose", () => {
+    it("emits dosing, dose_start, pumped and ready", async () => {
       const testEvents = await runWithEvents(async () => {
         const api = await getApi();
-
-        const promise = api.pour(10, 0.1);
-        await promise;
+        const result = await api.manual_dose("A", 2, 0.1);
+        expect(result.ok).toBe(true);
+        await new Promise((r) => setTimeout(r, 250));
       });
 
-      // First event should be status: pouring
-      const pourStartIndex = testEvents.findIndex((e) => e.type === "status" && e.status === "pouring");
-      expect(pourStartIndex).toBeGreaterThanOrEqual(0);
+      const dosing = testEvents.findIndex((e) => e.type === "status" && e.status === "dosing");
+      const start = testEvents.findIndex((e) => e.type === "dose_start");
+      const pumped = testEvents.findIndex((e) => e.type === "pumped");
+      const ready = testEvents.findIndex((e) => e.type === "status" && e.status === "ready");
+      expect(dosing).toBeGreaterThanOrEqual(0);
+      expect(start).toBeGreaterThan(dosing);
+      expect(pumped).toBeGreaterThan(start);
+      expect(ready).toBeGreaterThan(pumped);
+      expect(testEvents[pumped]).toEqual({ type: "pumped", channel: "A", ml: 2, source: "manual" });
+    });
 
-      // Then pour_start should come
-      const pourEventIndex = testEvents.findIndex((e) => e.type === "pour_start");
-      expect(pourEventIndex).toBeGreaterThan(pourStartIndex);
+    it("rejects a second click while dosing", async () => {
+      await runWithEvents(async () => {
+        const api = await getApi();
+        expect((await api.manual_dose("A", 1, 1)).ok).toBe(true);
+        const second = await api.manual_dose("B", 1, 1);
+        expect(second.ok).toBe(false);
+        await api.stop();
+        await new Promise((r) => setTimeout(r, 100));
+      });
+    });
 
-      // Finally status: done
-      const doneIndex = testEvents.findIndex(
-        (e, i) => i > pourEventIndex && e.type === "status" && e.status === "done"
-      );
-      expect(doneIndex).toBeGreaterThan(pourEventIndex);
+    it("reports partial mL when stopped", async () => {
+      const testEvents = await runWithEvents(async () => {
+        const api = await getApi();
+        await api.manual_dose("C", 10, 1);
+        await new Promise((r) => setTimeout(r, 300));
+        await api.stop();
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      const pumped = testEvents.filter((e) => e.type === "pumped");
+      expect(pumped.length).toBe(1);
+      const ml = (pumped[0] as { ml: number }).ml;
+      expect(ml).toBeGreaterThan(1);
+      expect(ml).toBeLessThan(6);
     });
 
     it("rejects during run", async () => {
@@ -249,9 +271,8 @@ describe("bridge mock", () => {
         const promise = api.run_program(blocks, 1);
         await new Promise((r) => setTimeout(r, 50));
 
-        const pourResult = await api.pour(5, 0.5);
-        expect(pourResult.ok).toBe(false);
-        expect(pourResult.error).toContain("already running");
+        const result = await api.manual_dose("B", 1, 1);
+        expect(result.ok).toBe(false);
 
         await api.stop();
         await promise;
@@ -259,53 +280,29 @@ describe("bridge mock", () => {
     });
   });
 
-  describe("manual pump", () => {
-    it("works when idle", async () => {
+  describe("pumped events", () => {
+    it("program blocks report delivered mL per channel", async () => {
       const testEvents = await runWithEvents(async () => {
         const api = await getApi();
-
-        const result = await api.manual_pump_start("A");
-        expect(result.ok).toBe(true);
-
-        const stopResult = await api.manual_pump_stop("A");
-        expect(stopResult.ok).toBe(true);
-      });
-
-      // Check for manual event
-      const manualStart = testEvents.find((e) => e.type === "manual" && e.channel === "A" && e.active);
-      expect(manualStart).toBeDefined();
-
-      // Check for manual stop event
-      const manualStop = testEvents.find((e) => e.type === "manual" && e.channel === "A" && !e.active);
-      expect(manualStop).toBeDefined();
-    });
-
-    it("rejects during run", async () => {
-      await runWithEvents(async () => {
-        const api = await getApi();
-
         const blocks: Block[] = [
           {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, s: 1 },
+              A: { ml: 3, s: 0.1 },
               B: { ml: 0, s: 0 },
               C: { ml: 0, s: 0 },
-              D: { ml: 0, s: 0 },
+              D: { ml: 1, s: 0.05 },
             },
           },
         ];
-
-        const promise = api.run_program(blocks, 1);
-        await new Promise((r) => setTimeout(r, 50));
-
-        const result = await api.manual_pump_start("B");
-        expect(result.ok).toBe(false);
-
-        await api.stop();
-        await promise;
+        await api.run_program(blocks, 1);
       });
+      const pumped = testEvents.filter((e) => e.type === "pumped");
+      expect(pumped).toEqual([
+        { type: "pumped", channel: "A", ml: 3, source: "program" },
+        { type: "pumped", channel: "D", ml: 1, source: "program" },
+      ]);
     });
   });
 

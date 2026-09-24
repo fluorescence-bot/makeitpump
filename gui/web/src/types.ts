@@ -15,7 +15,8 @@ export interface Preset {
   repeat: number;                        // >= 1
 }
 
-export type RunStatus = "ready" | "raining" | "paused" | "pouring" | "done" | "stopped" | "error";
+export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "done" | "stopped" | "error";
+export type PumpSource = "program" | "manual";
 
 // Events pushed from backend -> UI
 export type BackendEvent =
@@ -23,17 +24,15 @@ export type BackendEvent =
   | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
-  | { type: "pour_start"; ml: number; s: number }
-  | { type: "manual"; channel: Channel; active: boolean };
+  | { type: "dose_start"; channel: Channel; ml: number; s: number }         // a manual click started
+  | { type: "pumped"; channel: Channel; ml: number; source: PumpSource };    // mL actually delivered (pro-rata if stopped)
 
 export interface BackendApi {
   run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }>;
   pause_run(): Promise<{ ok: boolean }>;
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
-  pour(ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
-  manual_pump_start(channel: Channel): Promise<{ ok: boolean }>;
-  manual_pump_stop(channel: Channel): Promise<{ ok: boolean }>;
+  manual_dose(channel: Channel, ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
   save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json

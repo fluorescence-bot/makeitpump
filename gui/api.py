@@ -37,7 +37,6 @@ class Api:
         self._resume_event = threading.Event()
         self._runner_lock = threading.Lock()
         self._active_status = "raining"  # status to restore after resume
-        self._manual_channels: set = set()
 
     def set_window(self, window: Any) -> None:
         """Set the pywebview window object for event delivery."""
@@ -107,7 +106,7 @@ class Api:
                     block_type = block.get("type")
 
                     if block_type == "pump":
-                        self._run_pump_block(block.get("pumps", {}))
+                        self._run_pump_block(block.get("pumps", {}), "program")
                     elif block_type == "pause":
                         self._run_pause_block(float(block.get("s", 0.0)))
 
@@ -128,10 +127,18 @@ class Api:
         now = time.monotonic()
         return elapsed + (now - last), now
 
-    def _run_pump_block(self, pumps: Dict[str, Any]) -> None:
+    def _emit_pumped(self, jobs: Dict[str, "tuple[float, float]"], elapsed: float, source: str) -> None:
+        """Report how much each channel actually delivered (pro-rata if cut short)."""
+        for ch, (ml, s) in jobs.items():
+            delivered = ml if elapsed >= s else ml * elapsed / s
+            if delivered > 0:
+                self._emit_event({"type": "pumped", "channel": ch, "ml": delivered, "source": source})
+
+    def _run_pump_block(self, pumps: Dict[str, Any], source: str) -> None:
         """Run several channels at once. Each channel pumps its own mL over its own
         seconds; the block ends when the longest channel is done. Checks
-        pause/stop every 50 ms."""
+        pause/stop every 50 ms. Emits a `pumped` event per channel with the
+        volume actually delivered, tagged with `source`."""
         jobs: Dict[str, "tuple[float, float]"] = {}
         for ch, p in pumps.items():
             ml, s = float(p.get("ml", 0) or 0), float(p.get("s", 0) or 0)
@@ -156,6 +163,7 @@ class Api:
             if self._stop_event.is_set():
                 for ch in running:
                     hardware.stop_pump(ch)
+                self._emit_pumped(jobs, elapsed, source)
                 return
             if self._pause_event.is_set() and not paused:
                 for ch in running:
@@ -182,6 +190,7 @@ class Api:
 
         for ch in running:
             hardware.stop_pump(ch)
+        self._emit_pumped(jobs, elapsed, source)
 
     def _run_pause_block(self, s: float) -> None:
         """Wait s seconds (not counting time spent paused), checking pause/stop."""
@@ -243,53 +252,41 @@ class Api:
         self._emit_event({"type": "status", "status": "stopped"})
         return {"ok": True}
 
-    def pour(self, ml: float, s: float) -> Dict[str, Any]:
-        """Pour liquid from bowl D into the final cup."""
+    def _busy(self) -> bool:
+        return self._runner_thread is not None and self._runner_thread.is_alive()
+
+    def manual_dose(self, channel: str, ml: float, s: float) -> Dict[str, Any]:
+        """Pump a fixed `ml` on one channel over `s` seconds (one manual click).
+        Runs on the runner thread, so it is refused while anything else runs and
+        can be stopped with stop()."""
+        ml, s = float(ml), float(s)
+        if channel not in ("A", "B", "C", "D"):
+            return {"ok": False, "error": f"Unknown channel {channel}"}
+        if ml <= 0 or s <= 0:
+            return {"ok": False, "error": "Dose needs mL > 0 and s > 0"}
         with self._runner_lock:
-            if self._runner_thread is not None and self._runner_thread.is_alive():
-                return {"ok": False, "error": "A program is already running"}
+            if self._busy():
+                return {"ok": False, "error": "Busy"}
 
             self._stop_event.clear()
             self._pause_event.clear()
             self._resume_event.clear()
 
-            def _pour_impl() -> None:
+            def _dose_impl() -> None:
                 try:
-                    self._active_status = "pouring"
-                    self._emit_event({"type": "status", "status": "pouring"})
-                    self._emit_event({"type": "pour_start", "ml": ml, "s": s})
-                    self._run_pump_block({"D": {"ml": ml, "s": s}})
+                    self._active_status = "dosing"
+                    self._emit_event({"type": "status", "status": "dosing"})
+                    self._emit_event({"type": "dose_start", "channel": channel, "ml": ml, "s": s})
+                    self._run_pump_block({channel: {"ml": ml, "s": s}}, "manual")
                     if not self._stop_event.is_set():
-                        self._emit_event({"type": "status", "status": "done"})
+                        self._emit_event({"type": "status", "status": "ready"})
                 except Exception as e:
                     self._emit_event({"type": "status", "status": "error", "message": str(e)})
                     hardware.stop_all()
 
-            self._runner_thread = threading.Thread(target=_pour_impl, daemon=True)
+            self._runner_thread = threading.Thread(target=_dose_impl, daemon=True)
             self._runner_thread.start()
 
-        return {"ok": True}
-
-    def _busy(self) -> bool:
-        return self._runner_thread is not None and self._runner_thread.is_alive()
-
-    def manual_pump_start(self, channel: str) -> Dict[str, Any]:
-        """Start a manual pump on the given channel (runs until stopped).
-        Refused while a program or pour is running, so it can't fight the runner."""
-        if self._busy():
-            return {"ok": False, "error": "Busy running a program"}
-        hardware.start_pump(channel, 0, 0)
-        self._manual_channels.add(channel)
-        self._emit_event({"type": "manual", "channel": channel, "active": True})
-        return {"ok": True}
-
-    def manual_pump_stop(self, channel: str) -> Dict[str, Any]:
-        """Stop a manual pump on the given channel."""
-        if channel not in self._manual_channels:
-            return {"ok": False}
-        self._manual_channels.discard(channel)
-        hardware.stop_pump(channel)
-        self._emit_event({"type": "manual", "channel": channel, "active": False})
         return {"ok": True}
 
     def list_presets(self) -> List[str]:

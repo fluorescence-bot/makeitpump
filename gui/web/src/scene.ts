@@ -8,8 +8,8 @@ export interface Scene {
   startPour(ml: number, s: number): void;
   setPaused(paused: boolean): void;
   stopAll(): void;
-  setManual(ch: Channel, active: boolean): void;
-  onManualPress(cb: (ch: Channel, active: boolean) => void): void;
+  onDose(cb: (ch: Channel, ml: number) => void): void;
+  setTotals(totals: Record<Channel, number>): void;
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
 }
@@ -56,14 +56,12 @@ function getCSSVar(varName: string, fallback: string): string {
 export function createScene(container: HTMLElement): Scene {
   const bowlState = { A: 0, B: 0, C: 0 };
   let paused = false;
-  let manualActive: Record<Channel, boolean> = { A: false, B: false, C: false, D: false };
 
   const nameChangeCallbacks: ((ch: Channel, name: string) => void)[] = [];
-  const manualPressCallbacks: ((ch: Channel, active: boolean) => void)[] = [];
+  const doseCallbacks: ((ch: Channel, ml: number) => void)[] = [];
+  // mL pumped by one click, per channel (edited in the scene next to each name)
+  const doseMl: Record<Channel, number> = { A: 1, B: 1, C: 1, D: 1 };
   const names: Record<Channel, string> = { A: "A", B: "B", C: "C", D: "D" };
-
-  // Manual press tracking
-  const manualPressTimers: Record<Channel, number | null> = { A: null, B: null, C: null, D: null };
 
   // Create a stage wrapper for the SVG and inputs overlay
   const stage = document.createElement("div");
@@ -135,41 +133,6 @@ export function createScene(container: HTMLElement): Scene {
     sparklesGroup.appendChild(sparkle);
   });
   svg.appendChild(sparklesGroup);
-
-  // Sun (moved to top-left corner, smaller)
-  const sun = document.createElementNS("http://www.w3.org/2000/svg", "g");
-  sun.classList.add("rm-sun");
-  const sunCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  sunCircle.setAttribute("cx", "60");
-  sunCircle.setAttribute("cy", "55");
-  sunCircle.setAttribute("r", "18");
-  sunCircle.setAttribute("fill", "var(--col-c, #FFE7A0)");
-  sunCircle.setAttribute("opacity", "0.9");
-  sun.appendChild(sunCircle);
-  const sunFace = document.createElementNS("http://www.w3.org/2000/svg", "g");
-  // Sun eyes
-  const sunEye1 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  sunEye1.setAttribute("cx", "54");
-  sunEye1.setAttribute("cy", "51");
-  sunEye1.setAttribute("r", "2");
-  sunEye1.setAttribute("fill", "var(--col-c-ink, #D9B34A)");
-  sunFace.appendChild(sunEye1);
-  const sunEye2 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  sunEye2.setAttribute("cx", "66");
-  sunEye2.setAttribute("cy", "51");
-  sunEye2.setAttribute("r", "2");
-  sunEye2.setAttribute("fill", "var(--col-c-ink, #D9B34A)");
-  sunFace.appendChild(sunEye2);
-  // Sun smile
-  const sunSmile = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  sunSmile.setAttribute("d", "M 54 58 Q 60 61 66 58");
-  sunSmile.setAttribute("stroke", "var(--col-c-ink, #D9B34A)");
-  sunSmile.setAttribute("stroke-width", "1.2");
-  sunSmile.setAttribute("fill", "none");
-  sunSmile.setAttribute("stroke-linecap", "round");
-  sunFace.appendChild(sunSmile);
-  sun.appendChild(sunFace);
-  svg.appendChild(sun);
 
   // Clouds group
   const cloudsGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -484,9 +447,9 @@ export function createScene(container: HTMLElement): Scene {
   // Create name inputs for clouds and bowl (positioned using SVG foreignObject)
   const createNameInput = (ch: Channel, svgX: number, svgY: number) => {
     const foreignObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
-    foreignObj.setAttribute("x", (svgX - 45).toString()); // Center horizontally (45 = half of 90px width)
+    foreignObj.setAttribute("x", (svgX - 75).toString()); // Center horizontally (75 = half of 150px width)
     foreignObj.setAttribute("y", (svgY - 15).toString());
-    foreignObj.setAttribute("width", "90");
+    foreignObj.setAttribute("width", "150");
     foreignObj.setAttribute("height", "30");
     foreignObj.setAttribute("overflow", "visible");
 
@@ -516,11 +479,96 @@ export function createScene(container: HTMLElement): Scene {
     return input;
   };
 
+  // "click to pump x mL" hint drawn inside the clickable cloud / funnel rim,
+  // so clicking the text itself also doses
+  const doseHints = {} as Record<Channel, SVGTextElement>;
+  const createDoseHint = (ch: Channel, parent: SVGGElement, x: number, y: number) => {
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.setAttribute("x", String(x));
+    t.setAttribute("y", String(y));
+    t.setAttribute("text-anchor", "middle");
+    t.classList.add("rm-dose-hint");
+    parent.appendChild(t);
+    doseHints[ch] = t;
+  };
+  const renderDoseHint = (ch: Channel) => {
+    doseHints[ch].textContent = `click to pump ${doseMl[ch]} mL`;
+  };
+  createDoseHint("A", cloudElements.A.group, 170, 160);
+  createDoseHint("B", cloudElements.B.group, 450, 160);
+  createDoseHint("C", cloudElements.C.group, 730, 160);
+  createDoseHint("D", bowlGroup, 450, 318);
+  for (const ch of ["A", "B", "C", "D"] as Channel[]) renderDoseHint(ch);
+
+  // "mL per click" field just left of each cloud and the funnel (svgX = its right edge)
+  const createDoseInput = (ch: Channel, svgX: number, svgY: number) => {
+    const foreignObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+    foreignObj.setAttribute("x", (svgX - 64).toString());
+    foreignObj.setAttribute("y", (svgY - 22).toString());
+    foreignObj.setAttribute("width", "64");
+    foreignObj.setAttribute("height", "44");
+    foreignObj.setAttribute("overflow", "visible");
+
+    const wrap = document.createElement("label");
+    wrap.classList.add("rm-dose", `rm-dose-${ch}`);
+    wrap.title = `mL pumped per click on ${ch}`;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "0.1";
+    input.value = String(doseMl[ch]);
+    input.classList.add("rm-dose-input");
+    input.setAttribute("data-channel", ch);
+    input.addEventListener("change", () => {
+      const v = parseFloat(input.value);
+      if (v > 0) doseMl[ch] = v;
+      input.value = String(doseMl[ch]);
+      renderDoseHint(ch);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") input.blur();
+    });
+    const unit = document.createElement("span");
+    unit.textContent = "mL/click";
+    wrap.append(input, unit);
+
+    foreignObj.appendChild(wrap);
+    inputsGroup.appendChild(foreignObj);
+  };
+
+  // "pumped this session" total shown above each cloud and the funnel
+  const totalEls = {} as Record<Channel, HTMLDivElement>;
+  const createTotal = (ch: Channel, svgX: number, svgY: number) => {
+    const foreignObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+    foreignObj.setAttribute("x", (svgX - 120).toString());
+    foreignObj.setAttribute("y", (svgY - 13).toString());
+    foreignObj.setAttribute("width", "240");
+    foreignObj.setAttribute("height", "26");
+    const el = document.createElement("div");
+    el.classList.add("rm-total", `rm-total-${ch}`);
+    el.title = `Total pumped on ${ch} this session`;
+    foreignObj.appendChild(el);
+    inputsGroup.appendChild(foreignObj);
+    totalEls[ch] = el;
+  };
+  const renderTotal = (ch: Channel, ml: number) => {
+    totalEls[ch].textContent = `💧 ${ml.toFixed(2)} mL pumped in total`;
+  };
+  createTotal("A", 170, 42);
+  createTotal("B", 450, 42);
+  createTotal("C", 730, 42);
+  createTotal("D", 450, 268);
+  for (const ch of ["A", "B", "C", "D"] as Channel[]) renderTotal(ch, 0);
+
   // Position inputs below clouds and on bowl
   createNameInput("A", 170, 200);
   createNameInput("B", 450, 200);
   createNameInput("C", 730, 200);
   createNameInput("D", 450, 410);
+  createDoseInput("A", 170 - 100, 120);
+  createDoseInput("B", 450 - 100, 120);
+  createDoseInput("C", 730 - 100, 120);
+  createDoseInput("D", 190 - 8, 360);
 
   // ---- Animation engine -------------------------------------------------
   // One requestAnimationFrame loop drives everything, using real frame time (dt),
@@ -608,10 +656,10 @@ export function createScene(container: HTMLElement): Scene {
 
   const updateRainingClasses = () => {
     for (const ch of ["A", "B", "C"] as SourceChannel[]) {
-      const on = manualActive[ch] || flows.some((f) => f.kind === "rain" && f.ch === ch);
+      const on = flows.some((f) => f.kind === "rain" && f.ch === ch);
       cloudElements[ch].group.classList.toggle("rm-raining", on);
     }
-    const pouring = manualActive.D || flows.some((f) => f.kind === "pour");
+    const pouring = flows.some((f) => f.kind === "pour");
     tubeGroup.classList.toggle("rm-pouring", pouring);
   };
 
@@ -642,8 +690,8 @@ export function createScene(container: HTMLElement): Scene {
       for (const ch of ["A", "B", "C", "D"] as Channel[]) {
         const active =
           ch === "D"
-            ? manualActive.D || flows.some((f) => f.kind === "pour")
-            : manualActive[ch] || flows.some((f) => f.kind === "rain" && f.ch === ch);
+            ? flows.some((f) => f.kind === "pour")
+            : flows.some((f) => f.kind === "rain" && f.ch === ch);
         if (!active) { spawnAcc[ch] = 0; continue; }
         spawnAcc[ch] += (dt / 1000) * (ch === "D" ? 4 : DROPS_PER_SEC);
         while (spawnAcc[ch] >= 1) {
@@ -685,46 +733,20 @@ export function createScene(container: HTMLElement): Scene {
     requestAnimationFrame(tick);
   };
 
-  // Handle manual press
-  const handleManualPress = (ch: Channel, pointerEvent: PointerEvent) => {
-    const target = pointerEvent.target as HTMLElement;
-    if (target.closest(".rm-name-input")) return; // Don't trigger if clicking on input
-
-    if (manualPressTimers[ch]) clearTimeout(manualPressTimers[ch]!);
-
-    manualPressTimers[ch] = setTimeout(() => {
-      if (!manualActive[ch]) {
-        manualActive[ch] = true;
-        manualPressCallbacks.forEach((cb) => cb(ch, true));
-      }
-    }, 300);
+  // A click on a cloud or the bowl asks for one manual dose on that channel
+  const handleDoseClick = (ch: Channel, e: MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".rm-name-input")) return; // Don't trigger if clicking on input
+    doseCallbacks.forEach((cb) => cb(ch, doseMl[ch]));
   };
 
-  const handleManualRelease = (ch: Channel) => {
-    if (manualPressTimers[ch]) {
-      clearTimeout(manualPressTimers[ch]!);
-      manualPressTimers[ch] = null;
-    }
-    if (manualActive[ch]) {
-      manualActive[ch] = false;
-      manualPressCallbacks.forEach((cb) => cb(ch, false));
-    }
-  };
-
-  // Attach events to clouds
   for (const ch of ["A", "B", "C"] as SourceChannel[]) {
     const cloudGroup = cloudElements[ch].group;
     cloudGroup.classList.add("rm-interactive");
-    cloudGroup.addEventListener("pointerdown", (e) => handleManualPress(ch, e as PointerEvent));
-    cloudGroup.addEventListener("pointerup", () => handleManualRelease(ch));
-    cloudGroup.addEventListener("pointerleave", () => handleManualRelease(ch));
+    cloudGroup.addEventListener("click", (e) => handleDoseClick(ch, e));
   }
 
-  // Attach events to bowl
   bowlGroup.classList.add("rm-interactive");
-  bowlGroup.addEventListener("pointerdown", (e) => handleManualPress("D", e as PointerEvent));
-  bowlGroup.addEventListener("pointerup", () => handleManualRelease("D"));
-  bowlGroup.addEventListener("pointerleave", () => handleManualRelease("D"));
+  bowlGroup.addEventListener("click", (e) => handleDoseClick("D", e));
 
   // Append SVG to the stage wrapper
   stage.appendChild(svg);
@@ -808,14 +830,12 @@ export function createScene(container: HTMLElement): Scene {
       updateRainingClasses();
     },
 
-    setManual(ch: Channel, active: boolean) {
-      manualActive[ch] = active;
-      if (ch !== "D") cloudElements[ch].group.classList.toggle("rm-manual-active", active);
-      updateRainingClasses();
+    onDose(cb: (ch: Channel, ml: number) => void) {
+      doseCallbacks.push(cb);
     },
 
-    onManualPress(cb: (ch: Channel, active: boolean) => void) {
-      manualPressCallbacks.push(cb);
+    setTotals(totals: Record<Channel, number>) {
+      for (const ch of ["A", "B", "C", "D"] as Channel[]) renderTotal(ch, totals[ch]);
     },
 
     resetBowl() {

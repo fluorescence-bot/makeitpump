@@ -183,20 +183,6 @@
   animation: rm-twinkle-4 3.2s ease-in-out infinite 0.8s;
 }
 
-/* Sun animation */
-@keyframes rm-sun-glow {
-  0%, 100% {
-    filter: drop-shadow(0 0 5px rgba(255, 231, 160, 0.5));
-  }
-  50% {
-    filter: drop-shadow(0 0 10px rgba(255, 231, 160, 0.8));
-  }
-}
-
-.rm-sun {
-  animation: rm-sun-glow 3s ease-in-out infinite;
-}
-
 /* Liquid surface wave animation */
 @keyframes rm-wave {
   0%, 100% {
@@ -225,17 +211,11 @@
   filter: brightness(0.95);
 }
 
-/* Manual mode active */
-.rm-cloud.rm-manual-active {
-  filter: brightness(1.1);
-}
-
 /* Paused state */
 .rm-paused .rm-cloud,
 .rm-paused .rm-sparkle-0,
 .rm-paused .rm-sparkle-1,
-.rm-paused .rm-sparkle-2,
-.rm-paused .rm-sun {
+.rm-paused .rm-sparkle-2 {
   animation-play-state: paused;
 }
 
@@ -252,7 +232,7 @@
   color: var(--ink, #5B4B7A);
   outline: none;
   transition: all 0.2s;
-  width: 85px;
+  width: 145px;
   text-align: center;
   box-sizing: border-box;
   height: 28px;
@@ -264,6 +244,75 @@
   box-shadow: 0 0 12px rgba(79, 179, 198, 0.3);
 }
 
+/* mL-per-click field left of each cloud and the funnel */
+.rm-dose {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink, #5B4B7A);
+}
+
+.rm-dose-input {
+  width: 54px;
+  padding: 2px 4px;
+  border: 2px solid var(--col-d-ink, #9A7FD6);
+  border-radius: 10px;
+  background: white;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: inherit;
+  text-align: center;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.rm-dose-A .rm-dose-input { border-color: var(--col-a-ink, #4FB3C6); }
+.rm-dose-B .rm-dose-input { border-color: var(--col-b-ink, #E07AAE); }
+.rm-dose-C .rm-dose-input { border-color: var(--col-c-ink, #D9B34A); }
+
+.rm-dose-input:focus {
+  background: #F4F0FF;
+  box-shadow: 0 0 12px rgba(79, 179, 198, 0.3);
+}
+
+/* "click to pump x mL" inside each cloud and the funnel rim */
+.rm-dose-hint {
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--ink, #5B4B7A);
+  opacity: 0.75;
+  user-select: none;
+}
+
+/* Session total above each cloud / the funnel */
+.rm-total {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: max-content;
+  margin: 0 auto;
+  padding: 2px 10px;
+  background: white;
+  border: 2px solid var(--col-d-ink, #9A7FD6);
+  border-radius: 999px;
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink, #5B4B7A);
+  white-space: nowrap;
+}
+
+.rm-total-A { border-color: var(--col-a-ink, #4FB3C6); }
+.rm-total-B { border-color: var(--col-b-ink, #E07AAE); }
+.rm-total-C { border-color: var(--col-c-ink, #D9B34A); }
+
 /* Reduced motion support */
 @media (prefers-reduced-motion: reduce) {
   .rm-cloud-a,
@@ -272,7 +321,6 @@
   .rm-sparkle-0,
   .rm-sparkle-1,
   .rm-sparkle-2,
-  .rm-sun,
   .rm-cloud.rm-raining {
     animation: none !important;
   }

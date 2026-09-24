@@ -80,6 +80,19 @@ The `hardware.py` file contains stubs for pump control:
 
 The backend team replaces these functions with actual pump control logic. Currently they just print debug messages.
 
+For now we chose to run the electronics with an Arduino Nano.
+
+## Manual Dosing & Session Totals
+
+The control bar sets a pump speed (0-100 %) shared by manual doses. Clicking
+a cloud (A/B/C) or the bowl (D) in the scene doses a fixed mL amount at that
+speed on the runner thread — doses are refused while the runner is busy and
+can be stopped mid-way. Every pump (manual or from a program block) emits a
+`pumped` event with the mL actually delivered, which the frontend accumulates
+into a per-channel (A-D) session log shown in the scene, with reset and
+copy-as-CSV. There is no standalone "Make it POUR!" button/API anymore —
+dosing is click-driven.
+
 ## Project Structure
 
 ```

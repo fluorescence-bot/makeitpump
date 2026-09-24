@@ -81,6 +81,16 @@ def wait_for_thread(thread: threading.Thread, timeout: float = 2.0) -> bool:
     return not thread.is_alive()
 
 
+def wait_for_status(window: FakeWindow, status: str, timeout: float = 1.0) -> bool:
+    """Poll until a status event is emitted. Returns True if seen before timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if any(e["type"] == "status" and e["status"] == status for e in window.events):
+            return True
+        time.sleep(0.01)
+    return False
+
+
 class TestPumpBlock:
     """Tests for pump block execution."""
 
@@ -317,11 +327,7 @@ class TestPauseResume:
         assert pause_result["ok"] is True
 
         # Verify paused status was emitted
-        time.sleep(0.05)
-        paused_events = [
-            e for e in fake_window.events if e["type"] == "status" and e["status"] == "paused"
-        ]
-        assert len(paused_events) > 0
+        assert wait_for_status(fake_window, "paused")
 
         time.sleep(0.1)
 

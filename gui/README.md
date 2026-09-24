@@ -80,7 +80,8 @@ The `hardware.py` file contains stubs for pump control:
 
 The backend team replaces these functions with actual pump control logic. Currently they just print debug messages.
 
-For now we chose to run the electronics with an Arduino Nano.
+We ended up running the electronics with an Adafruit M0 Express (the Arduino
+Nano was sold out).
 
 ## Manual Dosing & Session Totals
 

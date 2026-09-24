@@ -26,7 +26,8 @@ dependencies and dev mode), and [`gui/CONTRACT.md`](gui/CONTRACT.md) for how
 the GUI talks to the backend. The pump/robot stubs the backend team fills in
 live in [`gui/hardware.py`](gui/hardware.py).
 
-For now we chose to run the electronics with an Arduino Nano.
+We ended up running the electronics with an Adafruit M0 Express (the Arduino
+Nano was sold out).
 
 Manual dosing is click-driven: click a cloud (A/B/C) or the bowl (D) in the
 scene to dose a fixed mL amount at the control bar's pump speed (0-100 %).

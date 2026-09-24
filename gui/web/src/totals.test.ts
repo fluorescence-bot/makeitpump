@@ -1,18 +1,46 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { computeTotals } from "./totals";
+import { flow } from "./flow";
 import type { Block } from "./types";
 
 describe("computeTotals", () => {
+  // Max flow of 100 mL/s, so a channel takes ml / speed seconds
+  const realMax = flow.maxMlPerS;
+  beforeAll(() => {
+    flow.maxMlPerS = 100;
+  });
+  afterAll(() => {
+    flow.maxMlPerS = realMax;
+  });
+
+  it("takes longer at a lower speed", () => {
+    const block = (speed: number): Block[] => [
+      {
+        id: "b1",
+        type: "pump",
+        pumps: {
+          A: { ml: 10, speed },
+          B: { ml: 0, speed: 80 },
+          C: { ml: 0, speed: 80 },
+          D: { ml: 0, speed: 80 },
+        },
+      },
+    ];
+    expect(computeTotals(block(10), 1).totalTime).toBe(1);
+    expect(computeTotals(block(5), 1).totalTime).toBe(2);
+    expect(computeTotals(block(0), 1).totalTime).toBe(0); // speed 0 = idle
+  });
+
   it("computes totals for a simple pump block", () => {
     const blocks: Block[] = [
       {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, s: 5 },
-          B: { ml: 5, s: 3 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 10, speed: 2 },
+          B: { ml: 5, speed: 1.67 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 0, speed: 0 },
         },
       },
     ];
@@ -21,7 +49,7 @@ describe("computeTotals", () => {
 
     expect(result.totalIn).toBe(15); // 10 + 5 + 0
     expect(result.totalOut).toBe(0);
-    expect(result.totalTime).toBe(5); // max(5, 3, 0, 0)
+    expect(result.totalTime).toBe(5); // slowest channel: A 10 mL at 2 % of 100 mL/s
     expect(result.timeStr).toBe("0:05");
   });
 
@@ -31,10 +59,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, s: 5 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 8, s: 10 },
+          A: { ml: 10, speed: 2 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 8, speed: 0.8 },
         },
       },
     ];
@@ -52,10 +80,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 5, s: 2 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 5, speed: 2.5 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 0, speed: 0 },
         },
       },
       {
@@ -78,10 +106,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, s: 6 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 12, speed: 2 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 0, speed: 0 },
         },
       },
     ];
@@ -99,10 +127,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, s: 2 },
-          B: { ml: 5, s: 2 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 3, s: 2 },
+          A: { ml: 10, speed: 5 },
+          B: { ml: 5, speed: 2.5 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 3, speed: 1.5 },
         },
       },
     ];
@@ -121,10 +149,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 1, s: 65 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 65, speed: 1 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 0, speed: 0 },
         },
       },
     ];
@@ -140,10 +168,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 5, s: 2 },
-          B: { ml: 3, s: 3 },
-          C: { ml: 2, s: 1 },
-          D: { ml: 1, s: 2 },
+          A: { ml: 5, speed: 2.5 },
+          B: { ml: 3, speed: 1 },
+          C: { ml: 2, speed: 2 },
+          D: { ml: 1, speed: 0.5 },
         },
       },
       {
@@ -155,10 +183,10 @@ describe("computeTotals", () => {
         id: "b3",
         type: "pump",
         pumps: {
-          A: { ml: 4, s: 1 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 5, s: 2 },
+          A: { ml: 4, speed: 4 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 5, speed: 2.5 },
         },
       },
     ];
@@ -185,10 +213,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 0, s: 0 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 0, speed: 0 },
+          B: { ml: 0, speed: 0 },
+          C: { ml: 0, speed: 0 },
+          D: { ml: 0, speed: 0 },
         },
       },
     ];

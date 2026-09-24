@@ -1,4 +1,5 @@
 import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpSource, RunStatus } from "./types";
+import { pumpSeconds } from "./flow";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
 let mockMode = false;
@@ -157,6 +158,17 @@ function yamlParse(yaml: string): any {
   return parseObject(0);
 }
 
+// Why a block's pumps are invalid, or null if they are fine (mirrors api.pumps_error)
+export function pumpsError(pumps: Partial<Record<Channel, ChannelPump>>): string | null {
+  for (const ch of Object.keys(pumps) as Channel[]) {
+    const { ml, speed } = pumps[ch]!;
+    if (ml < 0) return `${ch}: negative mL`;
+    if (!(speed >= 0 && speed <= 100)) return `${ch}: speed must be 0-100`;
+    if (ml > 0 && speed === 0) return `${ch}: mL set but speed = 0`;
+  }
+  return null;
+}
+
 // Mock backend implementation
 class MockBackend implements BackendApi {
   private running = false;
@@ -167,6 +179,10 @@ class MockBackend implements BackendApi {
   async run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }> {
     if (this.running) {
       return { ok: false, error: "Program already running" };
+    }
+    for (const block of blocks) {
+      const error = block.type === "pump" ? pumpsError(block.pumps) : null;
+      if (error) return { ok: false, error };
     }
 
     this.running = true;
@@ -228,11 +244,11 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
-  // Mirrors Api._run_pump_block: waits max(s) (not counting paused time), then
-  // emits one `pumped` event per channel with the mL actually delivered.
+  // Mirrors Api._run_pump_block: waits for the slowest channel (not counting paused
+  // time), then emits one `pumped` event per channel with the mL actually delivered.
   private async runPumpBlock(pumps: Partial<Record<Channel, ChannelPump>>, source: PumpSource): Promise<void> {
     const jobs = (Object.keys(pumps) as Channel[])
-      .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumps[ch]!.s }))
+      .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumpSeconds(pumps[ch]!.ml, pumps[ch]!.speed) }))
       .filter((j) => j.s > 0);
     if (!jobs.length) return;
     const duration = Math.max(...jobs.map((j) => j.s)) * 1000;
@@ -282,9 +298,9 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
-  async manual_dose(channel: Channel, ml: number, s: number): Promise<{ ok: boolean; error?: string }> {
-    if (ml <= 0 || s <= 0) {
-      return { ok: false, error: "Dose needs mL > 0 and s > 0" };
+  async manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }> {
+    if (ml <= 0 || !(speed > 0 && speed <= 100)) {
+      return { ok: false, error: "Dose needs mL > 0 and 0 < speed <= 100" };
     }
     if (this.running) {
       return { ok: false, error: "Busy" };
@@ -294,12 +310,12 @@ class MockBackend implements BackendApi {
     this.paused = false;
     this.activeStatus = "dosing";
     emitEvent({ type: "status", status: "dosing" });
-    emitEvent({ type: "dose_start", channel, ml, s });
+    emitEvent({ type: "dose_start", channel, ml, speed });
 
     // Like the Python runner, the call returns right away and the dose runs in the background.
     (async () => {
       try {
-        await this.runPumpBlock({ [channel]: { ml, s } }, "manual");
+        await this.runPumpBlock({ [channel]: { ml, speed } }, "manual");
         if (this.running) emitEvent({ type: "status", status: "ready" });
       } finally {
         this.running = false;
@@ -405,10 +421,10 @@ function seedExamplePreset(): void {
             id: "b1",
             type: "pump" as const,
             pumps: {
-              A: { ml: 5, s: 10 },
-              B: { ml: 3, s: 6 },
-              C: { ml: 0, s: 0 },
-              D: { ml: 0, s: 0 },
+              A: { ml: 5, speed: 80 },
+              B: { ml: 3, speed: 80 },
+              C: { ml: 0, speed: 80 },
+              D: { ml: 0, speed: 80 },
             },
           },
           { id: "b2", type: "pause" as const, s: 5 },
@@ -416,20 +432,20 @@ function seedExamplePreset(): void {
             id: "b3",
             type: "pump" as const,
             pumps: {
-              A: { ml: 0, s: 0 },
-              B: { ml: 0, s: 0 },
-              C: { ml: 1, s: 4 },
-              D: { ml: 0, s: 0 },
+              A: { ml: 0, speed: 80 },
+              B: { ml: 0, speed: 80 },
+              C: { ml: 1, speed: 40 },
+              D: { ml: 0, speed: 80 },
             },
           },
           {
             id: "b4",
             type: "pump" as const,
             pumps: {
-              A: { ml: 0, s: 0 },
-              B: { ml: 0, s: 0 },
-              C: { ml: 0, s: 0 },
-              D: { ml: 9, s: 15 },
+              A: { ml: 0, speed: 80 },
+              B: { ml: 0, speed: 80 },
+              C: { ml: 0, speed: 80 },
+              D: { ml: 9, speed: 80 },
             },
           },
         ],

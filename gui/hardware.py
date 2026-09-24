@@ -5,10 +5,14 @@ The backend team replaces these functions with actual pump control logic.
 Each function here just prints what it would do.
 """
 
+# Flow of one channel at speed 100 %. Placeholder until the pump is calibrated;
+# the runner uses it to know how long a dose takes. Must match flow.ts in the web UI.
+MAX_FLOW_ML_PER_S = 1.0
 
-def start_pump(channel: str, ml: float, s: float) -> None:
-    """Start a pump on the given channel for the specified volume and duration."""
-    print(f"[hardware] start_pump {channel} {ml} mL over {s} s")
+
+def start_pump(channel: str, ml: float, speed: float) -> None:
+    """Start a pump on the given channel to deliver `ml` at `speed` (0-100 % of max flow)."""
+    print(f"[hardware] start_pump {channel} {ml} mL at {speed} %")
 
 
 def stop_pump(channel: str) -> None:

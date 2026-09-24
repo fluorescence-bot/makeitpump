@@ -3,7 +3,8 @@ import "@fontsource/m-plus-rounded-1c/700.css";
 import "@fontsource/m-plus-rounded-1c/800.css";
 import "./styles.css";
 
-import { getApi, onEvent, isMock } from "./bridge";
+import { getApi, onEvent, isMock, pumpsError } from "./bridge";
+import { pumpSeconds } from "./flow";
 import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
@@ -18,9 +19,6 @@ let currentPreset: Preset = {
   blocks: [],
   repeat: 1,
 };
-
-// Pump speed used to turn a manual dose (mL) into a duration. Set to the real pump rate.
-const PUMP_RATE_ML_PER_S = 1;
 
 let isRunning = false;
 let currentStatus: RunStatus = "ready";
@@ -309,32 +307,20 @@ async function init(): Promise<void> {
     statusPill.title = message;
   }
 
-  // Manual dosing: each click pumps that channel's mL-per-click; the backend reports what was delivered
-  scene.onDose(async (ch: Channel, ml: number) => {
-    const result = await api.manual_dose(ch, ml, ml / PUMP_RATE_ML_PER_S);
+  // Manual dosing: each click pumps that channel's mL-per-click at its speed; the backend reports what was delivered
+  scene.onDose(async (ch: Channel, ml: number, speed: number) => {
+    const result = await api.manual_dose(ch, ml, speed);
     if (!result.ok) {
       // e.g. still busy with the previous click; this click is not pumped or logged
       showStatusError(result.error || "Busy");
     }
   });
 
-  // Validation helper
+  // Validation helper (same rules the backend applies)
   function validateBlocks(blocks: Block[]): { ok: boolean; message?: string } {
     for (const block of blocks) {
-      if (block.type === "pump") {
-        const channels: Channel[] = ["A", "B", "C", "D"];
-        for (const ch of channels) {
-          const pump = block.pumps[ch];
-          if (pump) {
-            if (pump.ml < 0 || pump.s < 0) {
-              return { ok: false, message: `${ch}: negative value` };
-            }
-            if (pump.ml > 0 && pump.s === 0) {
-              return { ok: false, message: `${ch}: mL set but s = 0` };
-            }
-          }
-        }
-      }
+      const error = block.type === "pump" ? pumpsError(block.pumps) : null;
+      if (error) return { ok: false, message: error };
     }
     return { ok: true };
   }
@@ -434,15 +420,16 @@ async function init(): Promise<void> {
 
       const block = event.block;
       if (block.type === "pump") {
-        // For each channel with s > 0, start rain or pour
+        // For each active channel, start rain or pour for as long as it pumps
         const channels: Channel[] = ["A", "B", "C", "D"];
         channels.forEach((ch) => {
           const pump = block.pumps[ch];
-          if (pump && pump.s > 0) {
+          const s = pump ? pumpSeconds(pump.ml, pump.speed) : 0;
+          if (s > 0) {
             if (ch === "D") {
-              scene.startPour(pump.ml, pump.s);
+              scene.startPour(pump.ml, s);
             } else {
-              scene.startRain(ch as any, pump.ml, pump.s);
+              scene.startRain(ch as any, pump.ml, s);
             }
           }
         });
@@ -452,8 +439,9 @@ async function init(): Promise<void> {
     } else if (event.type === "progress") {
       progressFill.style.width = `${event.fraction * 100}%`;
     } else if (event.type === "dose_start") {
-      if (event.channel === "D") scene.startPour(event.ml, event.s);
-      else scene.startRain(event.channel, event.ml, event.s);
+      const s = pumpSeconds(event.ml, event.speed);
+      if (event.channel === "D") scene.startPour(event.ml, s);
+      else scene.startRain(event.channel, event.ml, s);
     } else if (event.type === "pumped") {
       sessionLog.push({ time: new Date(), channel: event.channel, ml: event.ml, source: event.source });
       renderSessionLog();

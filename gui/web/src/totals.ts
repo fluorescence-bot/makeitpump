@@ -1,4 +1,5 @@
 import type { Block, Channel } from "./types";
+import { pumpSeconds } from "./flow";
 
 export interface Totals {
   totalIn: number;
@@ -23,14 +24,9 @@ export function computeTotals(blocks: Block[], repeat: number): Totals {
       totalIn += (block.pumps.A?.ml || 0) + (block.pumps.B?.ml || 0) + (block.pumps.C?.ml || 0);
       // Sum D for "out"
       totalOut += block.pumps.D?.ml || 0;
-      // Duration is max(s) across all channels
-      const maxS = Math.max(
-        block.pumps.A?.s || 0,
-        block.pumps.B?.s || 0,
-        block.pumps.C?.s || 0,
-        block.pumps.D?.s || 0
-      );
-      totalTime += maxS;
+      // Duration is the slowest channel's time
+      const channels: Channel[] = ["A", "B", "C", "D"];
+      totalTime += Math.max(...channels.map((ch) => pumpSeconds(block.pumps[ch]?.ml || 0, block.pumps[ch]?.speed || 0)));
     } else {
       totalTime += block.s;
     }

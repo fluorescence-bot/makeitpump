@@ -73,9 +73,10 @@ python app.py --dev
 
 The `hardware.py` file contains stubs for pump control:
 
-- `start_pump(channel, ml, s)` - Start a pump on channel A/B/C/D
+- `start_pump(channel, ml, speed)` - Start a pump on channel A/B/C/D, pumping `ml` at `speed` (0-100 % of max flow)
 - `stop_pump(channel)` - Stop a pump
 - `stop_all()` - Stop all pumps
+- `MAX_FLOW_ML_PER_S` - flow at speed 100 %, used to time doses (placeholder; keep in sync with `web/src/flow.ts`)
 
 The backend team replaces these functions with actual pump control logic. Currently they just print debug messages.
 

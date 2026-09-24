@@ -16,6 +16,7 @@ gui/
     src/main.ts         # app wiring, layout, preset UI, controls, status
     src/types.ts        # shared types (below), copy verbatim
     src/bridge.ts       # talks to window.pywebview.api, falls back to an in-browser mock
+    src/flow.ts         # speed % -> seconds (MAX flow, DEFAULT_SPEED) for animations, times and the mock
     src/blocks.ts       # program block editor (SortableJS)
     src/scene.ts        # SVG cartoon scene (clouds A/B/C, bowl D, final cup)
     src/scene.css
@@ -41,8 +42,9 @@ export type Channel = "A" | "B" | "C" | "D";
 export type SourceChannel = "A" | "B" | "C";
 
 // A pump block runs all four channels at the same time. Each channel pumps its own
-// mL over its own seconds (s = 0 means that channel is idle). The block lasts max(s).
-export interface ChannelPump { ml: number; s: number; }
+// mL at its own speed, 0-100 % of the pump's max flow (ml = 0 or speed = 0 means that
+// channel is idle). The block lasts as long as its slowest channel.
+export interface ChannelPump { ml: number; speed: number; }
 export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
 export type Block = PumpBlock | PauseBlock;
@@ -63,7 +65,7 @@ export type BackendEvent =
   | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
-  | { type: "dose_start"; channel: Channel; ml: number; s: number }         // a manual click started
+  | { type: "dose_start"; channel: Channel; ml: number; speed: number }     // a manual click started
   | { type: "pumped"; channel: Channel; ml: number; source: PumpSource };    // mL actually delivered (pro-rata if stopped)
 
 export interface BackendApi {
@@ -71,14 +73,21 @@ export interface BackendApi {
   pause_run(): Promise<{ ok: boolean }>;
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
-  manual_dose(channel: Channel, ml: number, s: number): Promise<{ ok: boolean; error?: string }>;
+  manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }>;
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
-  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.yaml
+  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
   import_preset_file(): Promise<Preset | null>;                             // native open dialog
   export_preset_file(preset: Preset): Promise<{ ok: boolean }>;             // native save dialog
 }
 ```
+
+## Pump speed
+Every pump channel runs at a **speed from 0 to 100 %** of the pump's max flow; there are no flow units in the UI. New channels and manual doses start at `DEFAULT_SPEED` (80). A channel is idle when `ml = 0` or `speed = 0`; `ml > 0` with `speed = 0`, negative mL, or a speed outside 0–100 is refused (not clamped) by `run_program`, by `manual_dose`, and by the UI before it calls them. Pause blocks are a length of time and keep `s` in seconds.
+
+Where a duration is needed (runner, mock, animations, block and program times) it is `seconds = ml / (MAX_FLOW_ML_PER_S * speed / 100)`. `MAX_FLOW_ML_PER_S` is a placeholder (1 mL/s) until the pump is calibrated, and is defined twice: `hardware.MAX_FLOW_ML_PER_S` (read at call time) and `flow.maxMlPerS` in `src/flow.ts`. The two must match.
+
+Presets saved before speed existed have `s` per channel; loading them drops `s` and sets `speed` to the default (converting `ml / s` would give speeds far over 100 %).
 
 ## Event delivery
 Python calls `window.__onBackendEvent(<json object>)` via `window.evaluate_js(...)`.
@@ -94,16 +103,18 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 
 ## Runner semantics (Python and mock must match)
 - `run_program`: rejects if something is already running. Sets status `raining`. For r in 0..repeat-1 and each block i, it emits `block_start`, runs it, then emits `block_end` and `progress`. When finished it sets status `done`.
-- A pump block starts every channel with `s > 0` simultaneously via `hardware.start_pump(channel, ml, s)`, stops each channel when its own `s` has elapsed, and ends after `max(s)`. It checks stop/pause every 50 ms.
+- A pump block starts every active channel simultaneously via `hardware.start_pump(channel, ml, speed)`, stops each channel when its own time has elapsed, and ends when the slowest channel is done. It checks stop/pause every 50 ms.
 - A pause block waits `s` seconds, checking stop/pause the same way.
-- Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining ml/s pro-rata (re-emitting `block_start` with the remaining block values is fine).
+- Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining mL at the same speed (re-emitting `block_start` with the remaining block values is fine).
 - Stop: `hardware.stop_all()`, status `stopped`.
-- Every pump block (program or manual) ends by emitting one `pumped` event per channel with `s > 0` and delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
-- `manual_dose(channel, ml, s)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
+- Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `s` is that channel's time and `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
+- `manual_dose(channel, ml, speed)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
 ## hardware.py (stubs for the backend team)
 ```python
-def start_pump(channel: str, ml: float, s: float) -> None: ...   # non-blocking start
+MAX_FLOW_ML_PER_S = 1.0   # flow at speed 100 %, placeholder until calibrated
+
+def start_pump(channel: str, ml: float, speed: float) -> None: ...   # non-blocking start, speed 0-100 %
 def stop_pump(channel: str) -> None: ...
 def stop_all() -> None: ...
 ```
@@ -119,14 +130,14 @@ export interface Scene {
   startPour(ml: number, s: number): void;                            // bowl drains ml over s sec into final cup
   setPaused(paused: boolean): void;                                  // freeze/unfreeze running animations
   stopAll(): void;                                                   // end all animations now (volumes stay)
-  onDose(cb: (ch: Channel, ml: number) => void): void;               // click on a cloud (A/B/C) or the bowl (D); ml = that channel's mL-per-click field
+  onDose(cb: (ch: Channel, ml: number, speed: number) => void): void; // click on a cloud (A/B/C) or the bowl (D); ml and speed = that channel's mL-per-click and speed % fields
   setTotals(totals: Record<Channel, number>): void;                  // session mL shown above each cloud and the funnel
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
 }
 export function createScene(container: HTMLElement): Scene;
 ```
-Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each of A/B/C with s > 0 and `startPour(ml, s)` for D with s > 0. On `dose_start` it does the same for the one dosed channel.
+Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each active A/B/C channel and `startPour(ml, s)` for D if active, with `s` from `pumpSeconds(ml, speed)`. On `dose_start` it does the same for the one dosed channel.
 
 ## Session log
 The UI keeps a per-session log of every `pumped` event and shows running totals per channel A–D (manual and program) above each cloud and the funnel, so the user can work backwards from a result (e.g. a target pH) to how much of each liquid it took. The log can be reset and copied as CSV.

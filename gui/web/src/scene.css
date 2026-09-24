@@ -244,7 +244,14 @@
   box-shadow: 0 0 12px rgba(79, 179, 198, 0.3);
 }
 
-/* mL-per-click field left of each cloud and the funnel */
+/* mL-per-click and speed fields left of each cloud and the funnel */
+.rm-dose-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
 .rm-dose {
   pointer-events: auto;
   display: flex;

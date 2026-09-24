@@ -1,5 +1,6 @@
 import Sortable from "sortablejs";
 import type { Block, PumpBlock, PauseBlock, Channel, ChannelPump } from "./types";
+import { DEFAULT_SPEED, pumpSeconds } from "./flow";
 
 interface CreateBlockEditorOpts {
   getNames: () => Record<Channel, string>;
@@ -14,30 +15,25 @@ interface BlockEditor {
   refreshNames(): void;
 }
 
-// Normalize a pump block: handle legacy {channel, ml, s} and missing channels
+const num = (v: any): number | undefined => (typeof v === "number" && isFinite(v) ? v : undefined);
+
+// Normalize a pump block: handle legacy {channel, ml, s}, missing channels, and
+// presets saved before speed existed (seconds are dropped, speed becomes the default)
 export function normalizePumpBlock(block: any): PumpBlock {
-  let pumps: Record<Channel, ChannelPump> = {
-    A: { ml: 0, s: 0 },
-    B: { ml: 0, s: 0 },
-    C: { ml: 0, s: 0 },
-    D: { ml: 0, s: 0 },
-  };
+  const idle = (): ChannelPump => ({ ml: 0, speed: DEFAULT_SPEED });
+  let pumps: Record<Channel, ChannelPump> = { A: idle(), B: idle(), C: idle(), D: idle() };
 
   if (block.pumps && typeof block.pumps === "object") {
     // New format: fill in missing channels
     const channels: Channel[] = ["A", "B", "C", "D"];
     channels.forEach((ch) => {
       const p = block.pumps[ch];
-      const ml = typeof p?.ml === "number" && isFinite(p.ml) ? p.ml : 0;
-      const s = typeof p?.s === "number" && isFinite(p.s) ? p.s : 0;
-      pumps[ch] = { ml, s };
+      pumps[ch] = { ml: num(p?.ml) ?? 0, speed: num(p?.speed) ?? DEFAULT_SPEED };
     });
-  } else if (block.channel && (block.ml !== undefined || block.s !== undefined)) {
+  } else if (block.channel && (block.ml !== undefined || block.s !== undefined || block.speed !== undefined)) {
     // Legacy format: convert to new
     const ch = block.channel as Channel;
-    const ml = typeof block.ml === "number" && isFinite(block.ml) ? block.ml : 0;
-    const s = typeof block.s === "number" && isFinite(block.s) ? block.s : 0;
-    pumps[ch] = { ml, s };
+    pumps[ch] = { ml: num(block.ml) ?? 0, speed: num(block.speed) ?? DEFAULT_SPEED };
   }
 
   return {
@@ -88,8 +84,8 @@ export function createBlockEditor(
         const names = opts.getNames();
         const channels: Channel[] = ["A", "B", "C", "D"];
 
-        // Calculate max duration
-        const maxS = Math.max(...channels.map((ch) => pblock.pumps[ch].s));
+        // Duration is the slowest channel's time
+        const maxS = Math.max(...channels.map((ch) => pumpSeconds(pblock.pumps[ch].ml, pblock.pumps[ch].speed)));
 
         // Header with drag handle, index, duration, actions
         const header = document.createElement("div");
@@ -99,7 +95,7 @@ export function createBlockEditor(
 
         const headerLabel = document.createElement("div");
         headerLabel.className = "pump-header-label";
-        headerLabel.innerHTML = `<span class="pump-emoji">💧</span><span class="pump-title">Pump</span><span class="pump-duration">· ${maxS} s</span>`;
+        headerLabel.innerHTML = `<span class="pump-emoji">💧</span><span class="pump-title">Pump</span><span class="pump-duration">· ≈ ${+maxS.toFixed(1)} s</span>`;
         header.appendChild(headerLabel);
 
         const actions = document.createElement("div");
@@ -131,11 +127,11 @@ export function createBlockEditor(
         header.appendChild(actions);
         card.appendChild(header);
 
-        // Grid: columns for A, B, C, D and rows for Letter, mL, s
+        // Grid: columns for A, B, C, D and rows for Letter, mL, speed %
         const grid = document.createElement("div");
         grid.className = "pump-grid";
 
-        // Row headers (mL and s labels)
+        // Row headers (mL and speed labels)
         const emptyCorner = document.createElement("div");
         emptyCorner.className = "pump-grid-empty";
         grid.appendChild(emptyCorner);
@@ -143,7 +139,7 @@ export function createBlockEditor(
         // Letter row
         const pillCells: Map<Channel, HTMLElement> = new Map();
         const mlCells: Map<Channel, HTMLElement> = new Map();
-        const sCells: Map<Channel, HTMLElement> = new Map();
+        const speedCells: Map<Channel, HTMLElement> = new Map();
 
         channels.forEach((ch) => {
           const cell = document.createElement("div");
@@ -199,30 +195,32 @@ export function createBlockEditor(
           grid.appendChild(cell);
         });
 
-        // s row
-        const sRowLabel = document.createElement("div");
-        sRowLabel.className = "pump-grid-label";
-        sRowLabel.textContent = "s";
-        grid.appendChild(sRowLabel);
+        // speed row (0-100 % of max flow)
+        const speedRowLabel = document.createElement("div");
+        speedRowLabel.className = "pump-grid-label";
+        speedRowLabel.textContent = "speed %";
+        grid.appendChild(speedRowLabel);
 
         channels.forEach((ch) => {
           const cell = document.createElement("div");
           cell.className = "pump-grid-cell pump-grid-input";
-          sCells.set(ch, cell);
+          speedCells.set(ch, cell);
           const pump = pblock.pumps[ch];
           const input = document.createElement("input");
           input.type = "number";
-          input.step = "0.5";
+          input.step = "5";
           input.min = "0";
+          input.max = "100";
           input.disabled = locked;
-          input.value = String(pump.s);
+          input.value = String(pump.speed);
 
           input.onchange = () => {
+            // Out-of-range values are kept (and shown in red) so Run can refuse them
             const val = parseFloat(input.value);
             const newPumps = { ...pblock.pumps };
             newPumps[ch] = {
               ...newPumps[ch],
-              s: isNaN(val) || val < 0 ? 0 : val,
+              speed: isNaN(val) ? 0 : val,
             };
             const newBlock: PumpBlock = { ...pblock, pumps: newPumps };
             blocks[i] = newBlock;
@@ -237,21 +235,21 @@ export function createBlockEditor(
         // Apply dimmed and danger states
         channels.forEach((ch) => {
           const pump = pblock.pumps[ch];
-          const isDimmed = pump.ml === 0 && pump.s === 0;
-          const isDanger = pump.ml < 0 || pump.s < 0 || (pump.ml > 0 && pump.s === 0);
+          const isDimmed = pump.ml === 0;
+          const isDanger = pump.ml < 0 || pump.speed < 0 || pump.speed > 100 || (pump.ml > 0 && pump.speed === 0);
 
           const pillCell = pillCells.get(ch);
           const mlCell = mlCells.get(ch);
-          const sCell = sCells.get(ch);
+          const speedCell = speedCells.get(ch);
 
           if (isDanger) {
             mlCell?.classList.add("pump-grid-danger");
-            sCell?.classList.add("pump-grid-danger");
+            speedCell?.classList.add("pump-grid-danger");
           }
           if (isDimmed && !isDanger) {
             pillCell?.classList.add("pump-grid-dimmed");
             mlCell?.classList.add("pump-grid-dimmed");
-            sCell?.classList.add("pump-grid-dimmed");
+            speedCell?.classList.add("pump-grid-dimmed");
           }
         });
 
@@ -341,10 +339,10 @@ export function createBlockEditor(
         id: generateId(),
         type: "pump",
         pumps: {
-          A: { ml: 1, s: 5 },
-          B: { ml: 0, s: 0 },
-          C: { ml: 0, s: 0 },
-          D: { ml: 0, s: 0 },
+          A: { ml: 1, speed: DEFAULT_SPEED },
+          B: { ml: 0, speed: DEFAULT_SPEED },
+          C: { ml: 0, speed: DEFAULT_SPEED },
+          D: { ml: 0, speed: DEFAULT_SPEED },
         },
       };
       blocks.push(newBlock);
@@ -404,10 +402,10 @@ export function createBlockEditor(
           id: generateId(),
           type: "pump",
           pumps: {
-            A: { ml: 1, s: 5 },
-            B: { ml: 0, s: 0 },
-            C: { ml: 0, s: 0 },
-            D: { ml: 0, s: 0 },
+            A: { ml: 1, speed: DEFAULT_SPEED },
+            B: { ml: 0, speed: DEFAULT_SPEED },
+            C: { ml: 0, speed: DEFAULT_SPEED },
+            D: { ml: 0, speed: DEFAULT_SPEED },
           },
         };
       } else {

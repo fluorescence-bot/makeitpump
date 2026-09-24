@@ -3,7 +3,7 @@ Tests for RainMixer API (gui/api.py).
 
 These tests verify:
 - Multi-channel pump block execution and event ordering
-- Pause/resume with pro-rata remaining time
+- Pause/resume with the remaining mL at the same speed
 - Stop behavior and concurrent run prevention
 - Manual dosing (fixed mL per click, rejected while busy, partial on stop)
 - `pumped` events for the session log
@@ -50,6 +50,37 @@ def api_instance(fake_window):
     return instance
 
 
+@pytest.fixture(autouse=True)
+def fast_flow(monkeypatch):
+    """Max flow of 100 mL/s, so a channel takes ml / speed seconds and tests stay fast."""
+    monkeypatch.setattr(hardware, "MAX_FLOW_ML_PER_S", 100.0)
+
+
+def test_pump_seconds_uses_max_flow():
+    assert api.pump_seconds(10, 50) == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    "pumps, error",
+    [
+        ({"A": {"ml": 1, "speed": 80}}, None),
+        ({"A": {"ml": 0, "speed": 0}}, None),
+        ({"A": {"ml": 1, "speed": 0}}, "A: mL set but speed = 0"),
+        ({"B": {"ml": 1, "speed": 120}}, "B: speed must be 0-100"),
+        ({"C": {"ml": -1, "speed": 50}}, "C: negative mL"),
+    ],
+)
+def test_pumps_error(pumps, error):
+    assert api.pumps_error(pumps) == error
+
+
+def test_run_rejects_invalid_speed(api_instance, mock_hardware):
+    blocks = [{"id": "b1", "type": "pump", "pumps": {"A": {"ml": 1, "speed": 150}}}]
+    result = api_instance.run_program(blocks, 1)
+    assert result == {"ok": False, "error": "A: speed must be 0-100"}
+    assert mock_hardware["start_pump"] == []
+
+
 @pytest.fixture
 def mock_hardware(monkeypatch):
     """Fixture to mock and spy on hardware calls."""
@@ -59,8 +90,8 @@ def mock_hardware(monkeypatch):
         "stop_all": [],
     }
 
-    def fake_start_pump(channel: str, ml: float, s: float) -> None:
-        calls["start_pump"].append((channel, ml, s))
+    def fake_start_pump(channel: str, ml: float, speed: float) -> None:
+        calls["start_pump"].append((channel, ml, speed))
 
     def fake_stop_pump(channel: str) -> None:
         calls["stop_pump"].append(channel)
@@ -96,16 +127,16 @@ class TestPumpBlock:
 
     def test_pump_block_multi_channel(self, api_instance, fake_window, mock_hardware):
         """Test multi-channel pump block with channels A and B active."""
-        # A: 10 mL over 0.3s, B: 5 mL over 0.1s, C: idle, D: idle
+        # A: 9 mL at 30% (0.3 s), B: 5 mL at 50% (0.1 s), C: idle, D: idle
         blocks = [
             {
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "s": 0.3},
-                    "B": {"ml": 5, "s": 0.1},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 9, "speed": 30},
+                    "B": {"ml": 5, "speed": 50},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -141,7 +172,7 @@ class TestPumpBlock:
         final_events = [e for e in events if e["type"] == "status" and e["status"] == "done"]
         assert len(final_events) == 1
 
-        # Verify hardware calls: only A and B should start (s > 0)
+        # Verify hardware calls: only A and B should start (ml > 0 and speed > 0)
         starts = mock_hardware["start_pump"]
         assert len(starts) == 2
         channels_started = {ch for ch, _, _ in starts}
@@ -156,17 +187,17 @@ class TestPumpBlock:
         assert len(stops) == 2
         assert set(stops) == {"A", "B"}
 
-    def test_pump_block_channels_s_zero_dont_start(self, api_instance, mock_hardware):
-        """Channels with s=0 should not start pumps."""
+    def test_pump_block_idle_channels_dont_start(self, api_instance, mock_hardware):
+        """Channels with no mL (or speed 0) should not start pumps."""
         blocks = [
             {
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "s": 0},  # s=0, should not start
-                    "B": {"ml": 5, "s": 0.1},  # active
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 0, "speed": 80},  # no mL, should not start
+                    "B": {"ml": 5, "speed": 50},  # active
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -180,17 +211,17 @@ class TestPumpBlock:
         assert starts[0][0] == "B"
 
     def test_pump_block_duration(self, api_instance, fake_window, mock_hardware):
-        """Test that pump block duration is max(s) across channels."""
+        """Test that pump block duration is the longest channel's time."""
         start_time = time.time()
         blocks = [
             {
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "s": 0.25},
-                    "B": {"ml": 1, "s": 0.15},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 2.5, "speed": 10},
+                    "B": {"ml": 1.5, "speed": 10},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -214,10 +245,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 100, "s": 10},  # Long run
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 100, "speed": 10},  # Long run
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -246,10 +277,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "s": 0.3},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 3, "speed": 10},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -276,10 +307,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "s": 2},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 1, "speed": 0.5},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -308,10 +339,10 @@ class TestPauseResume:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "s": 0.4},
-                    "B": {"ml": 5, "s": 0.2},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 10, "speed": 25},
+                    "B": {"ml": 5, "speed": 25},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -349,16 +380,16 @@ class TestPauseResume:
         assert any(e["type"] == "status" and e["status"] == "paused" for e in fake_window.events)
 
     def test_pause_resume_respects_remaining_time(self, api_instance, fake_window, mock_hardware):
-        """Test that resume uses remaining time, not full duration."""
+        """Test that resume pumps only the remaining mL, at the same speed."""
         blocks = [
             {
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "s": 0.3},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 9, "speed": 30},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -380,44 +411,32 @@ class TestPauseResume:
         api_instance.resume_run()
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
 
-        # Check that the resumed pump call has a reduced duration
-        # The ratio ml/s should be preserved
-        if len(starts_before) > 0:
-            original_call = starts_before[0]
-            original_ch, original_ml, original_s = original_call
+        # The resumed pump call delivers less than the original, at the same speed
+        assert len(starts_before) == 1
+        original_ch, original_ml, original_speed = starts_before[0]
+        resumed_calls = mock_hardware["start_pump"][len(starts_before) :]
+        assert len(resumed_calls) == 1
+        resumed_ch, resumed_ml, resumed_speed = resumed_calls[0]
 
-            # Find the resumed call (after pause)
-            resumed_calls = mock_hardware["start_pump"][len(starts_before) :]
-            if len(resumed_calls) > 0:
-                resumed_call = resumed_calls[0]
-                resumed_ch, resumed_ml, resumed_s = resumed_call
-
-                # Channel should be same
-                assert resumed_ch == original_ch
-
-                # Duration should be less than original
-                assert resumed_s < original_s
-
-                # ml/s ratio should be preserved (approximately)
-                original_rate = original_ml / original_s
-                resumed_rate = resumed_ml / resumed_s
-                assert abs(original_rate - resumed_rate) < 0.01  # Small tolerance
+        assert resumed_ch == original_ch
+        assert 0 < resumed_ml < original_ml
+        assert resumed_speed == original_speed
 
 
 class TestManualDose:
     """Tests for manual dosing (one click = fixed mL)."""
 
     def test_dose_pumps_fixed_amount(self, api_instance, fake_window, mock_hardware):
-        """A dose starts the pump with the given mL/s and reports the full mL."""
-        result = api_instance.manual_dose("A", 2.5, 0.1)
+        """A dose starts the pump with the given mL and speed and reports the full mL."""
+        result = api_instance.manual_dose("A", 2.5, 25)
         assert result["ok"] is True
         assert wait_for_thread(api_instance._runner_thread)
 
-        assert mock_hardware["start_pump"] == [("A", 2.5, 0.1)]
+        assert mock_hardware["start_pump"] == [("A", 2.5, 25)]
         assert mock_hardware["stop_pump"] == ["A"]
 
         assert fake_window.events[0] == {"type": "status", "status": "dosing"}
-        assert any(e["type"] == "dose_start" for e in fake_window.events)
+        assert {"type": "dose_start", "channel": "A", "ml": 2.5, "speed": 25} in fake_window.events
 
         pumped = [e for e in fake_window.events if e["type"] == "pumped"]
         assert pumped == [{"type": "pumped", "channel": "A", "ml": 2.5, "source": "manual"}]
@@ -442,10 +461,10 @@ class TestManualDose:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "s": 1},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 1, "speed": 1},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -453,7 +472,7 @@ class TestManualDose:
         api_instance.run_program(blocks, 1)
         time.sleep(0.05)  # Let it start
 
-        result = api_instance.manual_dose("B", 1, 0.5)
+        result = api_instance.manual_dose("B", 1, 50)
         assert result["ok"] is False
         assert "Busy" in result.get("error", "")
 
@@ -473,7 +492,7 @@ class TestManualDose:
 
     def test_stopped_dose_reports_partial_ml(self, api_instance, fake_window, mock_hardware):
         """Stopping mid-dose logs only what was actually pumped."""
-        api_instance.manual_dose("C", 10, 1.0)
+        api_instance.manual_dose("C", 10, 10)
         time.sleep(0.3)
         api_instance.stop()
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
@@ -484,10 +503,10 @@ class TestManualDose:
         assert pumped[0]["source"] == "manual"
         assert 1.0 < pumped[0]["ml"] < 6.0
 
-    @pytest.mark.parametrize("ml, s", [(0, 1), (1, 0), (-1, 1)])
-    def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml, s):
-        """Zero or negative mL/s are refused without touching the pump."""
-        assert api_instance.manual_dose("A", ml, s)["ok"] is False
+    @pytest.mark.parametrize("ml, speed", [(0, 50), (1, 0), (-1, 50), (1, 101)])
+    def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml, speed):
+        """Zero or negative mL, and speed outside (0, 100], are refused without touching the pump."""
+        assert api_instance.manual_dose("A", ml, speed)["ok"] is False
         assert mock_hardware["start_pump"] == []
 
 
@@ -500,10 +519,10 @@ class TestPumpedEvents:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 3, "s": 0.1},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 1, "s": 0.05},
+                    "A": {"ml": 3, "speed": 30},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 1, "speed": 20},
                 },
             }
         ]
@@ -522,10 +541,10 @@ class TestPumpedEvents:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "s": 1.0},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 10, "speed": 10},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -549,10 +568,10 @@ class TestRepeat:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "s": 0.1},
-                    "B": {"ml": 0, "s": 0},
-                    "C": {"ml": 0, "s": 0},
-                    "D": {"ml": 0, "s": 0},
+                    "A": {"ml": 1, "speed": 10},
+                    "B": {"ml": 0, "speed": 0},
+                    "C": {"ml": 0, "speed": 0},
+                    "D": {"ml": 0, "speed": 0},
                 },
             }
         ]
@@ -587,10 +606,10 @@ class TestPresets:
                     "id": "b1",
                     "type": "pump",
                     "pumps": {
-                        "A": {"ml": 10, "s": 5},
-                        "B": {"ml": 5, "s": 3},
-                        "C": {"ml": 0, "s": 0},
-                        "D": {"ml": 0, "s": 0},
+                        "A": {"ml": 10, "speed": 80},
+                        "B": {"ml": 5, "speed": 80},
+                        "C": {"ml": 0, "speed": 0},
+                        "D": {"ml": 0, "speed": 0},
                     },
                 }
             ],

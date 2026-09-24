@@ -19,6 +19,24 @@ import webview
 import yaml
 
 
+def pump_seconds(ml: float, speed: float) -> float:
+    """How long one channel takes to pump `ml` at `speed` (0-100 % of max flow)."""
+    return ml / (hardware.MAX_FLOW_ML_PER_S * speed / 100)
+
+
+def pumps_error(pumps: Dict[str, Any]) -> Optional[str]:
+    """Return why a block's pumps are invalid, or None if they are fine."""
+    for ch, p in pumps.items():
+        ml, speed = float(p.get("ml", 0) or 0), float(p.get("speed", 0) or 0)
+        if ml < 0:
+            return f"{ch}: negative mL"
+        if not 0 <= speed <= 100:
+            return f"{ch}: speed must be 0-100"
+        if ml > 0 and speed == 0:
+            return f"{ch}: mL set but speed = 0"
+    return None
+
+
 def resource_dir() -> Path:
     """Return the directory where resources are stored, supporting PyInstaller bundling."""
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -127,32 +145,31 @@ class Api:
         now = time.monotonic()
         return elapsed + (now - last), now
 
-    def _emit_pumped(self, jobs: Dict[str, "tuple[float, float]"], elapsed: float, source: str) -> None:
+    def _emit_pumped(self, jobs: Dict[str, "tuple[float, float, float]"], elapsed: float, source: str) -> None:
         """Report how much each channel actually delivered (pro-rata if cut short)."""
-        for ch, (ml, s) in jobs.items():
+        for ch, (ml, _, s) in jobs.items():
             delivered = ml if elapsed >= s else ml * elapsed / s
             if delivered > 0:
                 self._emit_event({"type": "pumped", "channel": ch, "ml": delivered, "source": source})
 
     def _run_pump_block(self, pumps: Dict[str, Any], source: str) -> None:
-        """Run several channels at once. Each channel pumps its own mL over its own
-        seconds; the block ends when the longest channel is done. Checks
+        """Run several channels at once. Each channel pumps its own mL at its own
+        speed; the block ends when the longest channel is done. Checks
         pause/stop every 50 ms. Emits a `pumped` event per channel with the
         volume actually delivered, tagged with `source`."""
-        jobs: Dict[str, "tuple[float, float]"] = {}
+        jobs: Dict[str, "tuple[float, float, float]"] = {}  # ch -> (ml, speed, seconds)
         for ch, p in pumps.items():
-            ml, s = float(p.get("ml", 0) or 0), float(p.get("s", 0) or 0)
-            if s > 0:
-                jobs[ch] = (ml, s)
+            ml, speed = float(p.get("ml", 0) or 0), float(p.get("speed", 0) or 0)
+            if ml > 0 and speed > 0:
+                jobs[ch] = (ml, speed, pump_seconds(ml, speed))
         if not jobs:
             return
-        duration = max(s for _, s in jobs.values())
+        duration = max(s for _, _, s in jobs.values())
         running: set = set()
 
         def start(ch: str, elapsed: float) -> None:
-            ml, s = jobs[ch]
-            remaining_s = s - elapsed
-            hardware.start_pump(ch, ml * remaining_s / s, remaining_s)
+            ml, speed, s = jobs[ch]
+            hardware.start_pump(ch, ml * (s - elapsed) / s, speed)
             running.add(ch)
 
         for ch in jobs:
@@ -178,13 +195,13 @@ class Api:
                 self._resume_event.clear()
                 paused = False
                 self._emit_event({"type": "status", "status": self._active_status})
-                for ch, (_, s) in jobs.items():
+                for ch, (_, _, s) in jobs.items():
                     if s > elapsed:
                         start(ch, elapsed)
                 last = time.monotonic()
             elapsed, last = self._wait_step(elapsed, last)
             for ch in list(running):
-                if elapsed >= jobs[ch][1]:
+                if elapsed >= jobs[ch][2]:
                     hardware.stop_pump(ch)
                     running.discard(ch)
 
@@ -213,6 +230,11 @@ class Api:
 
     def run_program(self, blocks: List[Dict[str, Any]], repeat: int) -> Dict[str, Any]:
         """Run a program with the given blocks and repetition count."""
+        for block in blocks:
+            if block.get("type") == "pump":
+                error = pumps_error(block.get("pumps", {}))
+                if error:
+                    return {"ok": False, "error": error}
         with self._runner_lock:
             if self._runner_thread is not None and self._runner_thread.is_alive():
                 return {"ok": False, "error": "A program is already running"}
@@ -255,15 +277,15 @@ class Api:
     def _busy(self) -> bool:
         return self._runner_thread is not None and self._runner_thread.is_alive()
 
-    def manual_dose(self, channel: str, ml: float, s: float) -> Dict[str, Any]:
-        """Pump a fixed `ml` on one channel over `s` seconds (one manual click).
+    def manual_dose(self, channel: str, ml: float, speed: float) -> Dict[str, Any]:
+        """Pump a fixed `ml` on one channel at `speed` % (one manual click).
         Runs on the runner thread, so it is refused while anything else runs and
         can be stopped with stop()."""
-        ml, s = float(ml), float(s)
+        ml, speed = float(ml), float(speed)
         if channel not in ("A", "B", "C", "D"):
             return {"ok": False, "error": f"Unknown channel {channel}"}
-        if ml <= 0 or s <= 0:
-            return {"ok": False, "error": "Dose needs mL > 0 and s > 0"}
+        if ml <= 0 or not 0 < speed <= 100:
+            return {"ok": False, "error": "Dose needs mL > 0 and 0 < speed <= 100"}
         with self._runner_lock:
             if self._busy():
                 return {"ok": False, "error": "Busy"}
@@ -276,8 +298,8 @@ class Api:
                 try:
                     self._active_status = "dosing"
                     self._emit_event({"type": "status", "status": "dosing"})
-                    self._emit_event({"type": "dose_start", "channel": channel, "ml": ml, "s": s})
-                    self._run_pump_block({channel: {"ml": ml, "s": s}}, "manual")
+                    self._emit_event({"type": "dose_start", "channel": channel, "ml": ml, "speed": speed})
+                    self._run_pump_block({channel: {"ml": ml, "speed": speed}}, "manual")
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "status", "status": "ready"})
                 except Exception as e:

@@ -34,6 +34,7 @@ class App(tk.Tk):
         self.rotation = tk.StringVar(value="45")
         self.current_step = 0   # row that will run next; rows above are done
         self.pumping = False
+        self.initialized = False
         self.duplicate_next = tk.BooleanVar(value=False)
         self.header_widgets = []  # disabled while pumping
         self.cells = []        # cells[row][col] -> Entry
@@ -122,8 +123,12 @@ class App(tk.Tk):
             self.row_buttons.append(lbl)
             row_entries = []
             for c in range(len(COLUMN_HEADERS)):
+                var = tk.StringVar()
+                var.trace_add("write", lambda *_: self._update_run_state())
                 e = tk.Entry(self.grid_frame, justify="center", width=10,
-                             relief="solid", borderwidth=1)
+                             relief="solid", borderwidth=1, textvariable=var)
+                e.bind("<FocusOut>", lambda ev, i=r: self.after_idle(
+                    self._normalize_if_left, i))
                 e.grid(row=r + 1, column=c + 1, sticky="ew", padx=1, pady=1,
                        ipady=3)
                 row_entries.append(e)
@@ -178,6 +183,29 @@ class App(tk.Tk):
                 e.configure(state=state, bg=bg, disabledbackground=bg,
                             disabledforeground="#555555")
 
+    def _fill_blanks(self, index):
+        """Empty fields in a row become 0.0."""
+        for e in self.cells[index]:
+            if str(e.cget("state")) == "normal" and not e.get().strip():
+                e.insert(0, "0.0")
+
+    def _normalize_if_left(self, index):
+        """When focus leaves a row that has any value, fill its blanks with 0.0."""
+        if self.focus_get() in self.cells[index]:
+            return
+        if not self._step_is_empty(index):
+            self._fill_blanks(index)
+
+    def _update_run_state(self):
+        """Run is available when initialized, idle, and the next step row
+        (the one after the steps already done) has values."""
+        if not hasattr(self, "run_btn"):
+            return
+        ok = (self.initialized and not self.pumping
+              and self.current_step < NUM_ROWS
+              and not self._step_is_empty(self.current_step))
+        self.run_btn.configure(state="normal" if ok else "disabled")
+
     def _step_is_empty(self, index):
         return not any(v.strip() for v in self._row_values(index))
 
@@ -207,8 +235,9 @@ class App(tk.Tk):
     def on_choose_preset(self):
         self._load_preset(self.chosen_preset.get())
         # New preset starts from step 1 and needs a fresh init.
+        self.initialized = False
         self.init_btn.configure(state="normal")
-        self.run_btn.configure(state="disabled")
+        self._update_run_state()
 
     def on_save(self):
         name = self.current_preset.get()
@@ -220,6 +249,8 @@ class App(tk.Tk):
 
     def on_initialize(self):
         self.init_btn.configure(state="disabled")
+        self.initialized = False
+        self._update_run_state()
         self._set_header_enabled(False)
         self.pump.initialize()
         # Simulate init taking a moment; replace with real completion callback.
@@ -229,18 +260,20 @@ class App(tk.Tk):
         # Init finished: Initialize stays inactive, Run becomes active.
         self._set_header_enabled(True)
         self.current_step = 0
+        self.initialized = True
         self._refresh_rows()
-        self.run_btn.configure(state="normal")
+        self._update_run_state()
 
     def on_run_step(self):
         if self._step_is_empty(self.current_step):
             messagebox.showwarning("Empty step",
                                    f"Step #{self.current_step + 1} has no values.")
             return
+        self._fill_blanks(self.current_step)           # empty fields -> 0.0
         self._duplicate_into_next_row()
-        self.run_btn.configure(state="disabled")      # inactive while pumping
         self._set_header_enabled(False)
         self.pumping = True
+        self._update_run_state()                      # inactive while pumping
         self._refresh_rows()
         self.pump.run_step(self.current_step, self._row_values(self.current_step))
         # Simulate pumping; replace with real completion callback.
@@ -265,11 +298,10 @@ class App(tk.Tk):
                   or self._step_is_empty(self.current_step))
         self._refresh_rows()
         if at_end:
-            # Sequence finished: nothing left to run, allow a new init.
-            self.run_btn.configure(state="disabled")
+            # Nothing queued: allow a new init. Editing the next row later
+            # makes it runnable again (see _update_run_state).
             self.init_btn.configure(state="normal")
-        else:
-            self.run_btn.configure(state="normal")
+        self._update_run_state()
 
     def on_exit(self):
         self.destroy()

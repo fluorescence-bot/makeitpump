@@ -34,6 +34,7 @@ class App(tk.Tk):
         self.rotation = tk.StringVar(value="45")
         self.current_step = 0   # row that will run next; rows above are done
         self.pumping = False
+        self.duplicate_next = tk.BooleanVar(value=False)
         self.header_widgets = []  # disabled while pumping
         self.cells = []        # cells[row][col] -> Entry
         self.row_buttons = []  # row label buttons (#1, #2, ...)
@@ -137,6 +138,9 @@ class App(tk.Tk):
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(ipady=6)
+        ttk.Checkbutton(side, text="Duplicate current row\nto next row",
+                        variable=self.duplicate_next).pack(pady=(10, 0),
+                                                           anchor="w")
 
     def _build_footer(self):
         footer = ttk.Frame(self, padding=10)
@@ -233,6 +237,7 @@ class App(tk.Tk):
             messagebox.showwarning("Empty step",
                                    f"Step #{self.current_step + 1} has no values.")
             return
+        self._duplicate_into_next_row()
         self.run_btn.configure(state="disabled")      # inactive while pumping
         self._set_header_enabled(False)
         self.pumping = True
@@ -240,6 +245,17 @@ class App(tk.Tk):
         self.pump.run_step(self.current_step, self._row_values(self.current_step))
         # Simulate pumping; replace with real completion callback.
         self.after(2000, self._pumping_done)
+
+    def _duplicate_into_next_row(self):
+        """If ticked and the next row is empty, copy the current row into it."""
+        nxt = self.current_step + 1
+        if not self.duplicate_next.get() or nxt >= NUM_ROWS:
+            return
+        if not self._step_is_empty(nxt):
+            return                      # never overwrite an existing step
+        for entry, value in zip(self.cells[nxt], self._row_values(self.current_step)):
+            entry.delete(0, "end")
+            entry.insert(0, value)
 
     def _pumping_done(self):
         self.pumping = False

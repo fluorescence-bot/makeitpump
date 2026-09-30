@@ -32,7 +32,9 @@ class App(tk.Tk):
         self.current_preset = tk.StringVar(value="preset1")
         self.chosen_preset = tk.StringVar(value="preset1")
         self.rotation = tk.StringVar(value="45")
-        self.selected_row = 0
+        self.current_step = 0   # row that will run next; rows above are done
+        self.pumping = False
+        self.header_widgets = []  # disabled while pumping
         self.cells = []        # cells[row][col] -> Entry
         self.row_buttons = []  # row label buttons (#1, #2, ...)
 
@@ -40,7 +42,7 @@ class App(tk.Tk):
         self._build_steps()
         self._build_footer()
         self._load_preset("preset1")
-        self._select_row(0)
+        self._refresh_rows()
 
     # ---- layout ------------------------------------------------------------
     def _build_header(self):
@@ -58,15 +60,17 @@ class App(tk.Tk):
 
         right = ttk.Frame(header)
         right.grid(row=0, column=1, sticky="ne")
-        ttk.Combobox(right, textvariable=self.chosen_preset,
-                     values=list(PRESETS), state="readonly",
-                     width=18).pack(side="left")
-        ttk.Button(right, text="OK", width=4,
-                   command=self.on_choose_preset).pack(side="left", padx=(6, 0))
+        self.preset_box = ttk.Combobox(right, textvariable=self.chosen_preset,
+                                       values=list(PRESETS), state="readonly",
+                                       width=18)
+        self.preset_box.pack(side="left")
+        self.ok_btn = ttk.Button(right, text="OK", width=4,
+                                 command=self.on_choose_preset)
+        self.ok_btn.pack(side="left", padx=(6, 0))
 
-        ttk.Button(header, text="Save changes",
-                   command=self.on_save).grid(row=1, column=1, sticky="ne",
-                                              pady=(8, 0))
+        self.save_btn = ttk.Button(header, text="Save changes",
+                                   command=self.on_save)
+        self.save_btn.grid(row=1, column=1, sticky="ne", pady=(8, 0))
 
     def _build_steps(self):
         body = ttk.Frame(self, padding=(10, 10, 10, 0))
@@ -111,17 +115,16 @@ class App(tk.Tk):
 
         # body rows
         for r in range(NUM_ROWS):
-            btn = ttk.Button(self.grid_frame, text=f"#{r + 1}", width=5,
-                             command=lambda i=r: self._select_row(i))
-            btn.grid(row=r + 1, column=0, padx=1, pady=1, sticky="ew")
-            self.row_buttons.append(btn)
+            lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6,
+                            anchor="w")
+            lbl.grid(row=r + 1, column=0, padx=(2, 4), pady=1, sticky="ew")
+            self.row_buttons.append(lbl)
             row_entries = []
             for c in range(len(COLUMN_HEADERS)):
                 e = tk.Entry(self.grid_frame, justify="center", width=10,
                              relief="solid", borderwidth=1)
                 e.grid(row=r + 1, column=c + 1, sticky="ew", padx=1, pady=1,
                        ipady=3)
-                e.bind("<FocusIn>", lambda ev, i=r: self._select_row(i))
                 row_entries.append(e)
             self.cells.append(row_entries)
 
@@ -155,13 +158,24 @@ class App(tk.Tk):
         self.canvas.bind_all("<Button-5>", on_wheel)
 
     # ---- helpers -----------------------------------------------------------
-    def _select_row(self, index):
-        self.selected_row = index
-        for i, btn in enumerate(self.row_buttons):
-            btn.configure(text=f"\u25b6 #{i + 1}" if i == index else f"#{i + 1}")
-        for i, row in enumerate(self.cells):
+    def _refresh_rows(self):
+        """Done rows: locked + greyed. Current row: highlighted. Rest: editable.
+        While pumping everything is locked."""
+        for i, (lbl, row) in enumerate(zip(self.row_buttons, self.cells)):
+            if i < self.current_step:
+                text, bg, editable = f"\u2713 #{i + 1}", "#e0e0e0", False
+            elif i == self.current_step:
+                text, bg, editable = f"\u25b6 #{i + 1}", "#fff6c8", True
+            else:
+                text, bg, editable = f"#{i + 1}", "white", True
+            lbl.configure(text=text)
+            state = "normal" if editable and not self.pumping else "disabled"
             for e in row:
-                e.configure(bg="#fff6c8" if i == index else "white")
+                e.configure(state=state, bg=bg, disabledbackground=bg,
+                            disabledforeground="#555555")
+
+    def _step_is_empty(self, index):
+        return not any(v.strip() for v in self._row_values(index))
 
     def _load_preset(self, name):
         data = PRESETS[name]
@@ -172,21 +186,25 @@ class App(tk.Tk):
             for c, v in enumerate(values[:len(COLUMN_HEADERS)]):
                 self.cells[r][c].insert(0, v)
         self.current_preset.set(name)
+        self.current_step = 0
+        self._refresh_rows()
         self.current_label.configure(text=f"Current: {name}")
         self.rotation_label.configure(text=f"Rotation: {data['rotation']}\u00b0")
 
     def _row_values(self, index):
         return [e.get() for e in self.cells[index]]
 
-    def _set_controls_enabled(self, enabled):
-        state = "normal" if enabled else "disabled"
-        for row in self.cells:
-            for e in row:
-                e.configure(state=state)
+    def _set_header_enabled(self, enabled):
+        self.preset_box.configure(state="readonly" if enabled else "disabled")
+        for w in (self.ok_btn, self.save_btn):
+            w.configure(state="normal" if enabled else "disabled")
 
     # ---- callbacks (stubs) ---------------------------------------------------
     def on_choose_preset(self):
         self._load_preset(self.chosen_preset.get())
+        # New preset starts from step 1 and needs a fresh init.
+        self.init_btn.configure(state="normal")
+        self.run_btn.configure(state="disabled")
 
     def on_save(self):
         name = self.current_preset.get()
@@ -198,24 +216,44 @@ class App(tk.Tk):
 
     def on_initialize(self):
         self.init_btn.configure(state="disabled")
+        self._set_header_enabled(False)
         self.pump.initialize()
         # Simulate init taking a moment; replace with real completion callback.
         self.after(1500, self._init_done)
 
     def _init_done(self):
         # Init finished: Initialize stays inactive, Run becomes active.
+        self._set_header_enabled(True)
+        self.current_step = 0
+        self._refresh_rows()
         self.run_btn.configure(state="normal")
 
     def on_run_step(self):
+        if self._step_is_empty(self.current_step):
+            messagebox.showwarning("Empty step",
+                                   f"Step #{self.current_step + 1} has no values.")
+            return
         self.run_btn.configure(state="disabled")      # inactive while pumping
-        self._set_controls_enabled(False)
-        self.pump.run_step(self.selected_row, self._row_values(self.selected_row))
+        self._set_header_enabled(False)
+        self.pumping = True
+        self._refresh_rows()
+        self.pump.run_step(self.current_step, self._row_values(self.current_step))
         # Simulate pumping; replace with real completion callback.
         self.after(2000, self._pumping_done)
 
     def _pumping_done(self):
-        self._set_controls_enabled(True)
-        self.run_btn.configure(state="normal")
+        self.pumping = False
+        self.current_step += 1              # lock finished row, advance
+        self._set_header_enabled(True)
+        at_end = (self.current_step >= NUM_ROWS
+                  or self._step_is_empty(self.current_step))
+        self._refresh_rows()
+        if at_end:
+            # Sequence finished: nothing left to run, allow a new init.
+            self.run_btn.configure(state="disabled")
+            self.init_btn.configure(state="normal")
+        else:
+            self.run_btn.configure(state="normal")
 
     def on_exit(self):
         self.destroy()

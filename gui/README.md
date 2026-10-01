@@ -9,7 +9,18 @@ A cute desktop application for controlling a robotic liquid mixer (RainMixer). T
 - Python 3.8+
 - Node.js 16+ (for building the frontend)
 
-### Installation (All Platforms)
+### Quick start (one command)
+
+The run script installs whatever is missing (Node.js, uv, Python packages,
+platform GUI libraries), builds the frontend and opens the app. Re-running it
+skips steps that are already done; add `--clean` to start from scratch.
+
+- **macOS / Linux:** `./run.sh`
+- **Windows 10/11:** double-click `run.cmd` (or run `run.cmd` in a terminal),
+  or `./run.sh` from Git Bash. Uses `winget` to install Node.js LTS and, if
+  missing, the WebView2 runtime; Windows may ask for permission.
+
+### Manual installation (All Platforms)
 
 1. **Clone or enter the gui directory:**
    ```bash
@@ -132,3 +143,7 @@ gui/
 **Linux GTK errors**: Install `python3-gi` and `gir1.2-webkit2-4.1` as shown above
 
 **Linux "QtPy"/"must have either QT or GTK" errors**: GTK couldn't load, so pywebview fell back to Qt. `requirements.txt` installs the Qt backend on Linux; re-run `pip install -r requirements.txt` (or just `./run.sh`). If Qt then complains about the `xcb` platform plugin, install `libxcb-cursor0` (apt) / `xcb-util-cursor` (dnf, pacman).
+
+**Windows: `run.cmd` says Node.js wasn't found right after installing it**: the installer updated PATH for new terminals only. Close the window and run `run.cmd` again. If `winget` itself is missing, install Node.js LTS from https://nodejs.org.
+
+**Windows: blank window**: pywebview needs the Microsoft Edge WebView2 runtime (preinstalled on Windows 11). Install it from https://developer.microsoft.com/microsoft-edge/webview2/.

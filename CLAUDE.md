@@ -15,6 +15,9 @@ software to build or run:
   Has its own [`gui/CLAUDE.md`](gui/CLAUDE.md) (commands, architecture) and
   [`gui/CONTRACT.md`](gui/CONTRACT.md) (the frontend/backend interface spec) — read those before
   working in `gui/`.
+- `firmware/` — code that runs on the rig's microcontrollers. `firmware/cuvette_rotator/` is the
+  CircuitPython `code.py` for the Trinket M0 that rotates the cuvette (0–60°, USB serial); see its
+  README for the serial protocol. The board's copy is the one that runs — keep this in sync.
 - `course_exercises/arduino/` — standalone Arduino sketches from course exercises (e.g.
   `hc_sr04/`), unrelated to the `gui/` app.
 - `report.pdf` / `report.tex` — the project report.

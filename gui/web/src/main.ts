@@ -5,13 +5,13 @@ import "@fontsource/m-plus-rounded-1c/800.css";
 import "@fontsource/noto-color-emoji/400.css";
 import "./styles.css";
 
-import { getApi, onEvent, isMock, pumpsError } from "./bridge";
+import { getApi, onEvent, isMock, programError } from "./bridge";
 import { pumpSeconds } from "./flow";
 import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
 import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
-import type { BackendApi, BackendEvent, Block, Preset, Channel, RunStatus } from "./types";
+import type { BackendApi, BackendEvent, Preset, Channel, RotatorState, RunStatus } from "./types";
 
 // Global state
 let api: BackendApi;
@@ -24,6 +24,7 @@ let currentPreset: Preset = {
 
 let isRunning = false;
 let currentStatus: RunStatus = "ready";
+let rotatorState: RotatorState = "disconnected";
 // Everything pumped this session (manual clicks and program blocks), from `pumped` events
 const sessionLog: LogEntry[] = [];
 
@@ -318,14 +319,14 @@ async function init(): Promise<void> {
     }
   });
 
-  // Validation helper (same rules the backend applies)
-  function validateBlocks(blocks: Block[]): { ok: boolean; message?: string } {
-    for (const block of blocks) {
-      const error = block.type === "pump" ? pumpsError(block.pumps) : null;
-      if (error) return { ok: false, message: error };
-    }
-    return { ok: true };
-  }
+  // Cuvette rotator: a click on the robot rotates to its angle field, or reconnects it when offline
+  scene.onRotate(async (deg: number) => {
+    const result = await api.manual_rotate(deg);
+    if (!result.ok) showStatusError(result.error || "Busy");
+  });
+  scene.onRotatorConnect(() => {
+    api.rotator_connect();
+  });
 
   // Control bar buttons
   document.getElementById("btn-rain")!.onclick = async () => {
@@ -335,9 +336,10 @@ async function init(): Promise<void> {
       return;
     }
 
-    const validation = validateBlocks(blocks);
-    if (!validation.ok) {
-      showStatusError(validation.message || "Invalid block");
+    // Same checks the backend applies
+    const error = programError(blocks, rotatorState);
+    if (error) {
+      showStatusError(error);
       return;
     }
 
@@ -384,6 +386,7 @@ async function init(): Promise<void> {
       statusPill.textContent = status === "raining" ? "Raining..." :
                                 status === "paused" ? "Paused" :
                                 status === "dosing" ? "Dosing..." :
+                                status === "rotating" ? "Rotating..." :
                                 status === "done" ? "Done ✨" :
                                 status === "stopped" ? "Stopped" :
                                 status === "error" ? "Error" :
@@ -391,12 +394,13 @@ async function init(): Promise<void> {
 
       statusPill.className = `status-pill status-${status}`;
 
-      const running = status === "raining" || status === "dosing";
+      const running = status === "raining" || status === "dosing" || status === "rotating";
       const paused = status === "paused";
 
       rainBtn.disabled = running || paused;
       pauseBtn.textContent = paused ? "▶ Resume" : "⏸ Pause";
-      pauseBtn.disabled = !running && !paused;
+      // A manual rotate can't be paused (the board finishes each move)
+      pauseBtn.disabled = (!running && !paused) || status === "rotating";
       stopBtn.disabled = !running && !paused;
 
       blocksEditor.setLocked(running || paused);
@@ -447,11 +451,16 @@ async function init(): Promise<void> {
     } else if (event.type === "pumped") {
       sessionLog.push({ time: new Date(), channel: event.channel, ml: event.ml, source: event.source });
       renderSessionLog();
+    } else if (event.type === "rotator") {
+      rotatorState = event.state;
+      scene.setRotator(event.state, event.deg, event.target, event.message);
     }
   });
 
   // Initial setup
   updateUI();
+  // Look for the cuvette rotator board and home it (progress arrives as `rotator` events)
+  api.rotator_connect();
 }
 
 // Start the app

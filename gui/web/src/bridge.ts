@@ -1,5 +1,5 @@
-import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpSource, RunStatus } from "./types";
-import { pumpSeconds } from "./flow";
+import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpSource, RotatorState, RunStatus } from "./types";
+import { pumpSeconds, rotate, rotateError } from "./flow";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
 let mockMode = false;
@@ -169,21 +169,42 @@ export function pumpsError(pumps: Partial<Record<Channel, ChannelPump>>): string
   return null;
 }
 
+// Why the rotator can't take a move right now, or null if it can (mirrors api.Api._rotator_unavailable)
+export function rotatorUnavailable(state: RotatorState): string | null {
+  if (state === "disconnected" || state === "error") return "Cuvette rotator not connected";
+  if (state === "homing" || state === "moving") return "Cuvette rotator is busy";
+  return null;
+}
+
+// Why a program can't run, or null if it can (same checks as api.Api.run_program)
+export function programError(blocks: Block[], rotator: RotatorState): string | null {
+  for (const block of blocks) {
+    const error =
+      block.type === "pump" ? pumpsError(block.pumps) :
+      block.type === "rotate" ? rotateError(block.deg) :
+      null;
+    if (error) return error;
+  }
+  if (blocks.some((b) => b.type === "rotate")) return rotatorUnavailable(rotator);
+  return null;
+}
+
 // Mock backend implementation
 class MockBackend implements BackendApi {
   private running = false;
   private paused = false;
   private pausedAt = 0;
   private activeStatus: RunStatus = "raining";
+  // Demo rotator: "connects" and homes in a moment, then moves at rotate.sPerDeg
+  private rotatorState: RotatorState = "disconnected";
+  private rotatorDeg: number | null = null;
 
   async run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }> {
     if (this.running) {
       return { ok: false, error: "Program already running" };
     }
-    for (const block of blocks) {
-      const error = block.type === "pump" ? pumpsError(block.pumps) : null;
-      if (error) return { ok: false, error };
-    }
+    const error = programError(blocks, this.rotatorState);
+    if (error) return { ok: false, error };
 
     this.running = true;
     this.paused = false;
@@ -204,6 +225,8 @@ class MockBackend implements BackendApi {
 
           if (block.type === "pump") {
             await this.runPumpBlock(block.pumps, "program");
+          } else if (block.type === "rotate") {
+            await this.runRotate(block.deg);
           } else if (block.type === "pause") {
             const duration = block.s * 1000;
             let start = Date.now();
@@ -272,6 +295,51 @@ class MockBackend implements BackendApi {
       const ml = elapsed >= j.s ? j.ml : (j.ml * elapsed) / j.s;
       if (ml > 0) emitEvent({ type: "pumped", channel: j.ch, ml, source });
     }
+  }
+
+  // Mirrors Api._run_rotate: the move can't be paused; Stop stops waiting for it
+  private async runRotate(deg: number): Promise<void> {
+    const from = this.rotatorDeg ?? 0;
+    this.rotatorState = "moving";
+    emitEvent({ type: "rotator", state: "moving", deg: from, target: deg });
+    const end = Date.now() + Math.abs(deg - from) * rotate.sPerDeg * 1000;
+    while (this.running && Date.now() < end) await new Promise(r => setTimeout(r, 50));
+    this.rotatorState = "ready";
+    this.rotatorDeg = deg;
+    emitEvent({ type: "rotator", state: "ready", deg });
+  }
+
+  async rotator_connect(): Promise<{ ok: boolean; error?: string }> {
+    if (this.rotatorState === "homing") return { ok: true };
+    this.rotatorState = "homing";
+    emitEvent({ type: "rotator", state: "homing", deg: null });
+    setTimeout(() => {
+      this.rotatorState = "ready";
+      this.rotatorDeg = 0;
+      emitEvent({ type: "rotator", state: "ready", deg: 0 });
+    }, 1500);
+    return { ok: true };
+  }
+
+  async manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }> {
+    const error = rotateError(deg) ?? rotatorUnavailable(this.rotatorState);
+    if (error) return { ok: false, error };
+    if (this.running) return { ok: false, error: "Busy" };
+
+    this.running = true;
+    this.paused = false;
+    this.activeStatus = "rotating";
+    emitEvent({ type: "status", status: "rotating" });
+    (async () => {
+      try {
+        await this.runRotate(deg);
+        if (this.running) emitEvent({ type: "status", status: "ready" });
+      } finally {
+        this.running = false;
+        this.paused = false;
+      }
+    })();
+    return { ok: true };
   }
 
   async pause_run(): Promise<{ ok: boolean }> {

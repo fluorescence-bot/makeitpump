@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import hardware
+import rotator
 import webview
 import yaml
 
@@ -55,6 +56,9 @@ class Api:
         self._resume_event = threading.Event()
         self._runner_lock = threading.Lock()
         self._active_status = "raining"  # status to restore after resume
+        self._rotator = rotator.Rotator()
+        self._rotator_state = "disconnected"
+        self._connect_thread: Optional[threading.Thread] = None
 
     def set_window(self, window: Any) -> None:
         """Set the pywebview window object for event delivery."""
@@ -127,6 +131,8 @@ class Api:
                         self._run_pump_block(block.get("pumps", {}), "program")
                     elif block_type == "pause":
                         self._run_pause_block(float(block.get("s", 0.0)))
+                    elif block_type == "rotate":
+                        self._run_rotate(int(float(block["deg"])))
 
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "block_end", "index": block_idx, "repeat": repeat_idx})
@@ -228,13 +234,104 @@ class Api:
                 last = time.monotonic()
             elapsed, last = self._wait_step(elapsed, last)
 
+    def _emit_rotator(self, state: str, message: Optional[str] = None, target: Optional[int] = None) -> None:
+        """Record the rotator's state and tell the UI (with its current angle)."""
+        self._rotator_state = state
+        event: Dict[str, Any] = {"type": "rotator", "state": state, "deg": self._rotator.deg}
+        if target is not None:
+            event["target"] = target
+        if message:
+            event["message"] = message
+        self._emit_event(event)
+
+    def _rotator_unavailable(self) -> Optional[str]:
+        """Why the rotator can't take a move now, or None (mirrors bridge.rotatorUnavailable)."""
+        if self._rotator_state in ("disconnected", "error"):
+            return "Cuvette rotator not connected"
+        if self._rotator_state in ("homing", "moving"):
+            return "Cuvette rotator is busy"
+        return None
+
+    def _run_rotate(self, deg: int) -> None:
+        """Turn the cuvette to `deg` and wait for the board. The move can't be
+        paused; Stop stops waiting (the board still finishes the move)."""
+        self._emit_rotator("moving", target=deg)
+        try:
+            self._rotator.move(deg, should_cancel=self._stop_event.is_set)
+        except rotator.RotatorError as e:
+            self._emit_rotator("ready" if self._rotator.connected else "disconnected", str(e))
+            raise
+        self._emit_rotator("ready")
+
+    def rotator_connect(self) -> Dict[str, Any]:
+        """Find the rotator board, open it and home it, in the background.
+        Progress arrives as `rotator` events. Ignored while already connecting."""
+        if self._connect_thread is not None and self._connect_thread.is_alive():
+            return {"ok": True}
+        if self._rotator_state == "moving":
+            return {"ok": False, "error": "Cuvette rotator is busy"}
+
+        def _connect() -> None:
+            self._emit_rotator("homing")
+            try:
+                port = self._rotator.connect()
+                self._emit_rotator("ready", f"Connected on {port}")
+            except rotator.RotatorError as e:
+                self._rotator.close()
+                self._emit_rotator("disconnected", str(e))
+
+        self._connect_thread = threading.Thread(target=_connect, daemon=True)
+        self._connect_thread.start()
+        return {"ok": True}
+
+    def manual_rotate(self, deg: float) -> Dict[str, Any]:
+        """Turn the cuvette to `deg` (one click on the robot). Runs on the runner
+        thread like manual_dose, so it is refused while anything else runs."""
+        error = rotator.rotate_error(deg) or self._rotator_unavailable()
+        if error:
+            return {"ok": False, "error": error}
+        deg = int(float(deg))
+        with self._runner_lock:
+            if self._busy():
+                return {"ok": False, "error": "Busy"}
+
+            self._stop_event.clear()
+            self._pause_event.clear()
+            self._resume_event.clear()
+
+            def _rotate_impl() -> None:
+                try:
+                    self._active_status = "rotating"
+                    self._emit_event({"type": "status", "status": "rotating"})
+                    self._run_rotate(deg)
+                    if not self._stop_event.is_set():
+                        self._emit_event({"type": "status", "status": "ready"})
+                except Exception as e:
+                    self._emit_event({"type": "status", "status": "error", "message": str(e)})
+
+            self._runner_thread = threading.Thread(target=_rotate_impl, daemon=True)
+            self._runner_thread.start()
+
+        return {"ok": True}
+
     def run_program(self, blocks: List[Dict[str, Any]], repeat: int) -> Dict[str, Any]:
         """Run a program with the given blocks and repetition count."""
         for block in blocks:
-            if block.get("type") == "pump":
+            block_type = block.get("type")
+            if block_type == "pump":
                 error = pumps_error(block.get("pumps", {}))
-                if error:
-                    return {"ok": False, "error": error}
+            elif block_type == "rotate":
+                error = rotator.rotate_error(block.get("deg"))
+            elif block_type == "pause":
+                error = None
+            else:
+                error = f"Unknown block type {block_type!r}"
+            if error:
+                return {"ok": False, "error": error}
+        if any(block.get("type") == "rotate" for block in blocks):
+            error = self._rotator_unavailable()
+            if error:
+                return {"ok": False, "error": error}
         with self._runner_lock:
             if self._runner_thread is not None and self._runner_thread.is_alive():
                 return {"ok": False, "error": "A program is already running"}

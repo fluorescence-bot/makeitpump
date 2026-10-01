@@ -1,5 +1,5 @@
 import type { Block, Channel } from "./types";
-import { pumpSeconds } from "./flow";
+import { pumpSeconds, rotate } from "./flow";
 
 export interface Totals {
   totalIn: number;
@@ -17,6 +17,7 @@ export function computeTotals(blocks: Block[], repeat: number): Totals {
   let totalIn = 0;
   let totalOut = 0;
   let totalTime = 0;
+  let angle = 0;
 
   blocks.forEach((block) => {
     if (block.type === "pump") {
@@ -27,6 +28,10 @@ export function computeTotals(blocks: Block[], repeat: number): Totals {
       // Duration is the slowest channel's time
       const channels: Channel[] = ["A", "B", "C", "D"];
       totalTime += Math.max(...channels.map((ch) => pumpSeconds(block.pumps[ch]?.ml || 0, block.pumps[ch]?.speed || 0)));
+    } else if (block.type === "rotate") {
+      // Estimate from the angle change, assuming the cuvette starts at 0°
+      totalTime += Math.abs(block.deg - angle) * rotate.sPerDeg;
+      angle = block.deg;
     } else {
       totalTime += block.s;
     }

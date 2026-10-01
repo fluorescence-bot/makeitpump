@@ -2,3 +2,4 @@ pywebview>=5
 # Linux: Qt backend (QtPy + PyQt6 + WebEngine), used when GTK/WebKit isn't available.
 pywebview[qt]>=5; sys_platform == "linux"
 PyYAML>=6.0
+pyserial>=3.5   # cuvette rotator (Trinket M0 over USB serial)

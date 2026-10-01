@@ -12,6 +12,16 @@ instrument.
 
 ## Running the GUI
 
+On macOS or Linux, one command installs everything that's missing (Homebrew on
+macOS, uv, Python, Node.js/npm, and GTK/WebKit on Linux via apt, dnf or pacman),
+builds the frontend and opens the GUI:
+
+```bash
+./gui/run.sh            # add --clean to reinstall from scratch
+```
+
+Manual setup:
+
 ```bash
 cd gui
 python3 -m venv .venv

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot setup + launch for the RainMixer GUI on macOS and Linux.
+# One-shot setup + launch for the RainMixer GUI on macOS, Linux and Windows.
 #
 #   ./run.sh          install anything missing, build the frontend, open the GUI
 #   ./run.sh --clean  wipe .venv, node_modules and dist first, then do the above
@@ -9,12 +9,24 @@
 #   Debian/Ubuntu  apt      -> Node.js/npm (NodeSource), GTK/WebKit, Qt libs
 #   Fedora/RHEL    dnf      -> Node.js/npm, GTK/WebKit, Qt libs
 #   Arch           pacman   -> Node.js/npm, GTK/WebKit, Qt libs
+#   Windows        hands off to run.ps1 (winget -> Node.js/npm, WebView2)
 # then on every platform: uv -> Python venv + packages -> frontend build -> GUI.
+#
+# On Windows, run this from Git Bash, or skip bash and double-click run.cmd.
 # Safe to re-run: steps that are already done are skipped.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+# Windows (Git Bash / MSYS2 / Cygwin): the PowerShell script does the real work.
+# WSL reports Linux and is handled below like any other distro.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        ps1="run.ps1"
+        if command -v cygpath >/dev/null 2>&1; then ps1="$(cygpath -w "$PWD/run.ps1")"; fi
+        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ps1" "$@" ;;
+esac
 
 say()  { printf '\033[1;35m==> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mError: %s\033[0m\n' "$*" >&2; exit 1; }
@@ -164,7 +176,7 @@ case "$PLATFORM" in
     linux-unknown)
         die "Couldn't find apt, dnf or pacman. Install Node.js $NODE_MIN+, curl and Python 3 yourself, then re-run." ;;
     *)
-        die "Unsupported OS: $(uname -s) (this script is for macOS and Linux)." ;;
+        die "Unsupported OS: $(uname -s) (this script is for macOS, Linux and Windows)." ;;
 esac
 
 hash -r

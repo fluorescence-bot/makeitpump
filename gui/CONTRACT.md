@@ -124,7 +124,7 @@ A robot turns the cuvette (the "final solution" mug in the scene) to an absolute
 - `rotator_connect()`: find, open and home the board on a background thread; ignored while already connecting. The UI calls it at startup and when the robot is clicked while offline.
 - A rotate block, or `manual_rotate(deg)`, is refused (`ok: false`) for an angle that isn't a whole number 0–60, or when the rotator isn't `ready` (`"Cuvette rotator not connected"` / `"Cuvette rotator is busy"`). `run_program` also refuses unknown block types.
 - Running a rotate block: emit `rotator` `moving`, send the angle, wait for the board's `MOVE_COMPLETE`, emit `rotator` `ready`. **A move can't be paused**: Pause takes effect at the next block. Stop stops waiting at once, but the board still finishes the move it's on (its firmware can't be interrupted).
-- `manual_rotate(deg)`: like `manual_dose`, on the runner thread: status `rotating`, the move, then status `ready`. The UI disables Pause while `rotating`.
+- `manual_rotate(deg)`: like `manual_dose`, on the runner thread: status `rotating`, then **re-home first** (`rotator` `homing`, `HOME` to the 0° switch) so every click starts from a grounded zero, then the move, then status `ready`. Rotate blocks in a program don't re-home. The UI disables Pause while `rotating`.
 - The mock fakes a rotator that connects and homes in 1.5 s, then moves at `rotate.sPerDeg` (`flow.ts`, measured ≈ 0.03 s/°).
 
 ## hardware.py (stubs for the backend team)

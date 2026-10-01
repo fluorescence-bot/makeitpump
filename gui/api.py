@@ -252,11 +252,18 @@ class Api:
             return "Cuvette rotator is busy"
         return None
 
-    def _run_rotate(self, deg: int) -> None:
-        """Turn the cuvette to `deg` and wait for the board. The move can't be
+    def _run_rotate(self, deg: int, home_first: bool = False) -> None:
+        """Turn the cuvette to `deg` and wait for the board. With `home_first`
+        it re-grounds on the 0° switch before the move. The move can't be
         paused; Stop stops waiting (the board still finishes the move)."""
-        self._emit_rotator("moving", target=deg)
         try:
+            if home_first:
+                self._emit_rotator("homing")
+                self._rotator.home(should_cancel=self._stop_event.is_set)
+                if self._stop_event.is_set():
+                    self._emit_rotator("ready")
+                    return
+            self._emit_rotator("moving", target=deg)
             self._rotator.move(deg, should_cancel=self._stop_event.is_set)
         except rotator.RotatorError as e:
             self._emit_rotator("ready" if self._rotator.connected else "disconnected", str(e))
@@ -285,8 +292,9 @@ class Api:
         return {"ok": True}
 
     def manual_rotate(self, deg: float) -> Dict[str, Any]:
-        """Turn the cuvette to `deg` (one click on the robot). Runs on the runner
-        thread like manual_dose, so it is refused while anything else runs."""
+        """Home the cuvette on its 0° switch, then turn it to `deg` (one click on
+        the robot). Runs on the runner thread like manual_dose, so it is refused
+        while anything else runs."""
         error = rotator.rotate_error(deg) or self._rotator_unavailable()
         if error:
             return {"ok": False, "error": error}
@@ -303,7 +311,7 @@ class Api:
                 try:
                     self._active_status = "rotating"
                     self._emit_event({"type": "status", "status": "rotating"})
-                    self._run_rotate(deg)
+                    self._run_rotate(deg, home_first=True)
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "status", "status": "ready"})
                 except Exception as e:

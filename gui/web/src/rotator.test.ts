@@ -51,11 +51,14 @@ describe("bridge mock rotator", () => {
     await api.rotator_connect();
     await until(() => events.some((e) => e.type === "rotator" && e.state === "ready"));
 
+    events.length = 0;
     expect(await api.manual_rotate(20)).toEqual({ ok: true });
     await until(() => events.some((e) => e.type === "status" && e.status === "ready"));
     const statuses = events.filter((e) => e.type === "status").map((e) => (e as any).status);
     expect(statuses).toEqual(["rotating", "ready"]);
     const rotatorEvents = events.filter((e) => e.type === "rotator");
+    // a click re-homes on the 0° switch first, then moves
+    expect(rotatorEvents.map((e) => (e as any).state)).toEqual(["homing", "moving", "ready"]);
     expect(rotatorEvents[rotatorEvents.length - 1]).toEqual({ type: "rotator", state: "ready", deg: 20 });
 
     events.length = 0;

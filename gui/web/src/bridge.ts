@@ -297,8 +297,22 @@ class MockBackend implements BackendApi {
     }
   }
 
-  // Mirrors Api._run_rotate: the move can't be paused; Stop stops waiting for it
-  private async runRotate(deg: number): Promise<void> {
+  // Mirrors Api._run_rotate: optionally re-home on the 0° switch first; the move
+  // can't be paused; Stop stops waiting for it
+  private async runRotate(deg: number, homeFirst = false): Promise<void> {
+    if (homeFirst) {
+      this.rotatorState = "homing";
+      emitEvent({ type: "rotator", state: "homing", deg: null });
+      // back to the switch, plus the back-off and calibration steps (~30°)
+      const homeEnd = Date.now() + ((this.rotatorDeg ?? 0) + 30) * rotate.sPerDeg * 1000;
+      this.rotatorDeg = 0;
+      while (this.running && Date.now() < homeEnd) await new Promise(r => setTimeout(r, 50));
+      if (!this.running) {
+        this.rotatorState = "ready";
+        emitEvent({ type: "rotator", state: "ready", deg: 0 });
+        return;
+      }
+    }
     const from = this.rotatorDeg ?? 0;
     this.rotatorState = "moving";
     emitEvent({ type: "rotator", state: "moving", deg: from, target: deg });
@@ -332,7 +346,7 @@ class MockBackend implements BackendApi {
     emitEvent({ type: "status", status: "rotating" });
     (async () => {
       try {
-        await this.runRotate(deg);
+        await this.runRotate(deg, true);
         if (this.running) emitEvent({ type: "status", status: "ready" });
       } finally {
         this.running = false;

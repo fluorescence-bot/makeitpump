@@ -204,12 +204,22 @@ class TestApi:
     def test_program_refuses_unknown_block(self, connected_api):
         assert connected_api.run_program([{"id": "x", "type": "spin"}], 1)["ok"] is False
 
-    def test_manual_rotate(self, connected_api, window):
+    def test_manual_rotate_homes_first(self, board, connected_api, window):
+        window.events.clear()
         assert connected_api.manual_rotate(20) == {"ok": True}
         assert wait_for(lambda: window.events[-1] == {"type": "status", "status": "ready"})
         statuses = [e["status"] for e in window.events if e["type"] == "status"]
         assert statuses == ["rotating", "ready"]
+        # every click re-grounds on the 0° switch, then moves
+        assert board.board.written == ["HOME", "HOME", "20"]
+        assert [(e["state"], e["deg"]) for e in rotator_events(window)] == [
+            ("homing", 0), ("moving", 0), ("ready", 20)]  # homing reports the last known angle
         assert connected_api._rotator.deg == 20
+
+    def test_program_rotate_does_not_home(self, board, connected_api, window):
+        connected_api.run_program([{"id": "r1", "type": "rotate", "deg": 10}], 1)
+        assert wait_for(lambda: any(e == {"type": "status", "status": "done"} for e in window.events))
+        assert board.board.written == ["HOME", "10"]
 
     def test_manual_rotate_refused_while_busy(self, board, connected_api):
         board.board.move_delay = 0.5

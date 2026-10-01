@@ -9,6 +9,7 @@ gui/
   app.py                # starts the pywebview window
   api.py                # Api class exposed to JS (js_api) + program runner thread
   hardware.py           # STUBS the backend team replaces (print + nothing else)
+  rotator.py            # real USB-serial driver for the cuvette rotator (Trinket M0)
   presets/example.yaml
   web/                  # Vite + TypeScript (vanilla, no framework)
     package.json, tsconfig.json, vite.config.ts (base: './')
@@ -47,7 +48,9 @@ export type SourceChannel = "A" | "B" | "C";
 export interface ChannelPump { ml: number; speed: number; }
 export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
-export type Block = PumpBlock | PauseBlock;
+// Turns the cuvette robot to an absolute angle: whole degrees, 0-60.
+export interface RotateBlock { id: string; type: "rotate"; deg: number; }
+export type Block = PumpBlock | PauseBlock | RotateBlock;
 
 export interface Preset {
   name: string;
@@ -56,7 +59,8 @@ export interface Preset {
   repeat: number;                        // >= 1
 }
 
-export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "done" | "stopped" | "error";
+export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" | "done" | "stopped" | "error";
+export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
 // Events pushed from backend -> UI
@@ -66,7 +70,8 @@ export type BackendEvent =
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
   | { type: "dose_start"; channel: Channel; ml: number; speed: number }     // a manual click started
-  | { type: "pumped"; channel: Channel; ml: number; source: PumpSource };    // mL actually delivered (pro-rata if stopped)
+  | { type: "pumped"; channel: Channel; ml: number; source: PumpSource }     // mL actually delivered (pro-rata if stopped)
+  | { type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }; // deg = current angle, null if unknown
 
 export interface BackendApi {
   run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }>;
@@ -74,6 +79,8 @@ export interface BackendApi {
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
   manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }>;
+  rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
+  manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
   save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
@@ -110,6 +117,16 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 - Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `s` is that channel's time and `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
 - `manual_dose(channel, ml, speed)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
+## Cuvette rotator
+A robot turns the cuvette (the "final solution" mug in the scene) to an absolute angle, **whole degrees 0–60**. It is an Adafruit Trinket M0 on USB serial running `firmware/cuvette_rotator/code.py` (protocol in its README). `rotator.py` finds it by USB VID `0x239a` / PID `0x801f` (falling back to product name `Trinket M0`), sends `HOME` on connect, and sends moves as plain integers.
+
+- Rotator state is pushed as `rotator` events: `disconnected` → `homing` → `ready`, and `moving` (with `target`) during a move. `deg` is the current angle (`null` until homed); `message` explains a failure.
+- `rotator_connect()`: find, open and home the board on a background thread; ignored while already connecting. The UI calls it at startup and when the robot is clicked while offline.
+- A rotate block, or `manual_rotate(deg)`, is refused (`ok: false`) for an angle that isn't a whole number 0–60, or when the rotator isn't `ready` (`"Cuvette rotator not connected"` / `"Cuvette rotator is busy"`). `run_program` also refuses unknown block types.
+- Running a rotate block: emit `rotator` `moving`, send the angle, wait for the board's `MOVE_COMPLETE`, emit `rotator` `ready`. **A move can't be paused**: Pause takes effect at the next block. Stop stops waiting at once, but the board still finishes the move it's on (its firmware can't be interrupted).
+- `manual_rotate(deg)`: like `manual_dose`, on the runner thread: status `rotating`, then **re-home first** (`rotator` `homing`, `HOME` to the 0° switch) so every click starts from a grounded zero, then the move, then status `ready`. Rotate blocks in a program don't re-home. The UI disables Pause while `rotating`.
+- The mock fakes a rotator that connects and homes in 1.5 s, then moves at `rotate.sPerDeg` (`flow.ts`, measured ≈ 0.03 s/°).
+
 ## hardware.py (stubs for the backend team)
 ```python
 MAX_FLOW_ML_PER_S = 1.0   # flow at speed 100 %, placeholder until calibrated
@@ -122,7 +139,7 @@ Each stub just prints what it would do.
 
 ## scene.ts exports
 ```ts
-import type { Channel, SourceChannel } from "./types";
+import type { Channel, RotatorState, SourceChannel } from "./types";
 export interface Scene {
   setNames(names: Record<Channel, string>): void;
   onNameChange(cb: (ch: Channel, name: string) => void): void;       // user edited a label in the scene
@@ -134,9 +151,13 @@ export interface Scene {
   setTotals(totals: Record<Channel, number>): void;                  // session mL shown above each cloud and the funnel
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
+  setRotator(state: RotatorState, deg: number | null, target?: number, message?: string): void; // mug tilts to the angle
+  onRotate(cb: (deg: number) => void): void;          // click on the robot while ready; deg = its "rotate to" field
+  onRotatorConnect(cb: () => void): void;             // click on the robot while disconnected / in error
 }
 export function createScene(container: HTMLElement): Scene;
 ```
+The robot (🦾🤖) stands right of the final-solution mug, with the current angle under it and a "rotate to °" field beside it. It is greyed out while the rotator is disconnected, and its arm cranks while it homes or moves. The mug tilts towards the rotator's angle at `rotate.sPerDeg`, in the same animation loop as the rain.
 Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each active A/B/C channel and `startPour(ml, s)` for D if active, with `s` from `pumpSeconds(ml, speed)`. On `dose_start` it does the same for the one dosed channel.
 
 ## Session log

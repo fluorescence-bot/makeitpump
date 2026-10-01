@@ -204,7 +204,8 @@ html, body {
   gap: 8px;
 }
 
-.block-card.block-pause {
+.block-card.block-pause,
+.block-card.block-rotate {
   align-items: center;
   padding: 6px 12px;
 }

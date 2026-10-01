@@ -367,3 +367,39 @@
 .rm-bowl-face {
   pointer-events: none;
 }
+
+/* Cuvette rotator robot next to the mug */
+.rm-robot-emoji {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font, sans-serif);
+  font-size: 36px;
+  user-select: none;
+}
+.rm-robot-arm {
+  transform-box: fill-box;
+  transform-origin: 80% 80%;
+}
+.rm-robot-busy .rm-robot-arm {
+  animation: rm-robot-crank 0.5s ease-in-out infinite alternate;
+}
+@keyframes rm-robot-crank {
+  from { transform: rotate(-14deg); }
+  to { transform: rotate(10deg); }
+}
+.rm-robot-angle {
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-size: 13px;
+  font-weight: 800;
+  fill: var(--ink, #5B4B7A);
+  user-select: none;
+}
+.rm-robot-off .rm-robot-emoji {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+.rm-robot-off .rm-robot-angle {
+  fill: var(--muted, #A99BC4);
+}
+.rm-angle .rm-dose-input { border-color: var(--muted, #A99BC4); }
+@media (prefers-reduced-motion: reduce) {
+  .rm-robot-busy .rm-robot-arm { animation: none; }
+}

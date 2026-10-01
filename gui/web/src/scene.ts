@@ -1,5 +1,5 @@
-import type { Channel, SourceChannel } from "./types";
-import { DEFAULT_SPEED } from "./flow";
+import type { Channel, RotatorState, SourceChannel } from "./types";
+import { DEFAULT_SPEED, ROTATE_MAX_DEG, rotate } from "./flow";
 import "./scene.css";
 
 export interface Scene {
@@ -13,6 +13,9 @@ export interface Scene {
   setTotals(totals: Record<Channel, number>): void;
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
+  setRotator(state: RotatorState, deg: number | null, target?: number, message?: string): void; // mug tilts to the angle
+  onRotate(cb: (deg: number) => void): void;          // click on the robot while ready; deg = its "rotate to" field
+  onRotatorConnect(cb: () => void): void;             // click on the robot while disconnected / in error
 }
 
 // Parse hex color to RGB
@@ -386,6 +389,10 @@ export function createScene(container: HTMLElement): Scene {
   // Cup (bigger, ~70 wide, with handle and face)
   const cupGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
   cupGroup.classList.add("rm-cup");
+  // Everything but the label tilts with the cuvette rotator (pivot: bottom of the mug)
+  const cupTilt = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  cupTilt.classList.add("rm-cup-tilt");
+  cupGroup.appendChild(cupTilt);
 
   // Cup body (about 70 wide)
   const cupBody = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -393,7 +400,7 @@ export function createScene(container: HTMLElement): Scene {
   cupBody.setAttribute("fill", "var(--col-d-empty, #EDE7FA)");
   cupBody.setAttribute("stroke", "var(--col-d-ink, #9A7FD6)");
   cupBody.setAttribute("stroke-width", "2.5");
-  cupGroup.appendChild(cupBody);
+  cupTilt.appendChild(cupBody);
 
   // Cup handle
   const cupHandle = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -402,7 +409,7 @@ export function createScene(container: HTMLElement): Scene {
   cupHandle.setAttribute("stroke-width", "3");
   cupHandle.setAttribute("fill", "none");
   cupHandle.setAttribute("stroke-linecap", "round");
-  cupGroup.appendChild(cupHandle);
+  cupTilt.appendChild(cupHandle);
 
   // Cup face (small eyes and smile)
   const cupEye1 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -410,14 +417,14 @@ export function createScene(container: HTMLElement): Scene {
   cupEye1.setAttribute("cy", "555");
   cupEye1.setAttribute("r", "2");
   cupEye1.setAttribute("fill", "var(--ink, #5B4B7A)");
-  cupGroup.appendChild(cupEye1);
+  cupTilt.appendChild(cupEye1);
 
   const cupEye2 = document.createElementNS("http://www.w3.org/2000/svg", "circle");
   cupEye2.setAttribute("cx", "620");
   cupEye2.setAttribute("cy", "555");
   cupEye2.setAttribute("r", "2");
   cupEye2.setAttribute("fill", "var(--ink, #5B4B7A)");
-  cupGroup.appendChild(cupEye2);
+  cupTilt.appendChild(cupEye2);
 
   const cupMouth = document.createElementNS("http://www.w3.org/2000/svg", "path");
   cupMouth.setAttribute("d", "M 590 565 Q 605 570 620 565");
@@ -425,7 +432,7 @@ export function createScene(container: HTMLElement): Scene {
   cupMouth.setAttribute("stroke-width", "1");
   cupMouth.setAttribute("fill", "none");
   cupMouth.setAttribute("stroke-linecap", "round");
-  cupGroup.appendChild(cupMouth);
+  cupTilt.appendChild(cupMouth);
 
   const cupLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
   cupLabel.setAttribute("x", "605");
@@ -439,6 +446,74 @@ export function createScene(container: HTMLElement): Scene {
   cupGroup.appendChild(cupLabel);
 
   svg.appendChild(cupGroup);
+
+  // Cuvette rotator robot, bottom right next to the mug: its arm "rotates" the mug.
+  // Click it to rotate to the angle in its field, or to (re)connect when it is offline.
+  const robotGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  robotGroup.classList.add("rm-robot", "rm-interactive", "rm-robot-off");
+  const robotHit = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  robotHit.setAttribute("x", "690");
+  robotHit.setAttribute("y", "512");
+  robotHit.setAttribute("width", "105");
+  robotHit.setAttribute("height", "98");
+  robotHit.setAttribute("fill", "transparent");
+  robotGroup.appendChild(robotHit);
+  const robotHint = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  robotHint.setAttribute("x", "742");
+  robotHint.setAttribute("y", "528");
+  robotHint.setAttribute("text-anchor", "middle");
+  robotHint.classList.add("rm-dose-hint");
+  robotGroup.appendChild(robotHint);
+  const robotArm = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  robotArm.setAttribute("x", "722");
+  robotArm.setAttribute("y", "576");
+  robotArm.setAttribute("text-anchor", "middle");
+  robotArm.classList.add("rm-robot-emoji", "rm-robot-arm");
+  robotArm.textContent = "🦾";
+  robotGroup.appendChild(robotArm);
+  const robotFace = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  robotFace.setAttribute("x", "764");
+  robotFace.setAttribute("y", "576");
+  robotFace.setAttribute("text-anchor", "middle");
+  robotFace.classList.add("rm-robot-emoji", "rm-robot-face");
+  robotFace.textContent = "🤖";
+  robotGroup.appendChild(robotFace);
+  const robotAngle = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  robotAngle.setAttribute("x", "742");
+  robotAngle.setAttribute("y", "602");
+  robotAngle.setAttribute("text-anchor", "middle");
+  robotAngle.classList.add("rm-robot-angle");
+  robotGroup.appendChild(robotAngle);
+  svg.appendChild(robotGroup);
+
+  let rotatorState: RotatorState = "disconnected";
+  let rotatorDeg: number | null = null;
+  let rotatorTarget: number | null = null;
+  let rotateDeg = 30; // angle a click on the robot rotates to (edited in the scene)
+  let cupAngle = 0; // drawn tilt, eases towards cupTarget in the animation loop
+  let cupTarget = 0;
+  const rotateCallbacks: ((deg: number) => void)[] = [];
+  const connectCallbacks: (() => void)[] = [];
+
+  const renderRobot = () => {
+    const off = rotatorState === "disconnected" || rotatorState === "error";
+    const busy = rotatorState === "moving" || rotatorState === "homing";
+    robotGroup.classList.toggle("rm-robot-off", off);
+    robotGroup.classList.toggle("rm-robot-busy", busy);
+    robotHint.textContent = off ? "click to connect" : busy ? "" : `click to rotate to ${rotateDeg}°`;
+    robotAngle.textContent =
+      rotatorState === "disconnected" ? "not connected" :
+      rotatorState === "error" ? "rotator error" :
+      rotatorState === "homing" ? "homing…" :
+      rotatorState === "moving" ? `${Math.round(cupAngle)}° → ${rotatorTarget}°` :
+      `${rotatorDeg ?? 0}°`;
+  };
+  renderRobot();
+
+  robotGroup.addEventListener("click", () => {
+    if (rotatorState === "disconnected" || rotatorState === "error") connectCallbacks.forEach((cb) => cb());
+    else if (rotatorState === "ready") rotateCallbacks.forEach((cb) => cb(rotateDeg));
+  });
 
 
   // Create a group for name inputs in the SVG using foreignObject
@@ -604,6 +679,28 @@ export function createScene(container: HTMLElement): Scene {
   createDoseInput("C", 730 - 100, 120);
   createDoseInput("D", 190 - 8, 360);
 
+  // "rotate to" angle field right of the robot
+  const angleObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  angleObj.setAttribute("x", "800");
+  angleObj.setAttribute("y", "540");
+  angleObj.setAttribute("width", "64");
+  angleObj.setAttribute("height", "50");
+  angleObj.setAttribute("overflow", "visible");
+  const angleField = createDoseField("D", {
+    title: `Angle a click on the robot rotates the cuvette to (0-${ROTATE_MAX_DEG}°)`,
+    unit: "rotate to °",
+    step: "5",
+    max: String(ROTATE_MAX_DEG),
+    get: () => rotateDeg,
+    set: (v) => {
+      if (Number.isInteger(v) && v >= 0 && v <= ROTATE_MAX_DEG) rotateDeg = v;
+      renderRobot();
+    },
+  });
+  angleField.classList.add("rm-angle");
+  angleObj.appendChild(angleField);
+  inputsGroup.appendChild(angleObj);
+
   // ---- Animation engine -------------------------------------------------
   // One requestAnimationFrame loop drives everything, using real frame time (dt),
   // so volumes are exact regardless of frame rate, and pausing simply skips updates.
@@ -763,6 +860,15 @@ export function createScene(container: HTMLElement): Scene {
       }
 
       updateBowlVisual(now);
+
+      // ease the mug's tilt towards the rotator's angle at roughly the motor's speed
+      if (cupAngle !== cupTarget) {
+        const maxStep = reducedMotion ? Infinity : dt / 1000 / rotate.sPerDeg;
+        const diff = cupTarget - cupAngle;
+        cupAngle = Math.abs(diff) <= maxStep ? cupTarget : cupAngle + Math.sign(diff) * maxStep;
+        cupTilt.setAttribute("transform", `rotate(${cupAngle.toFixed(2)} 605 580)`);
+        if (rotatorState === "moving") renderRobot();
+      }
     }
     requestAnimationFrame(tick);
   };
@@ -812,7 +918,7 @@ export function createScene(container: HTMLElement): Scene {
     liquidSurface.setAttribute("rx", hw.toFixed(1));
     liquidSurface.setAttribute("ry", ry.toFixed(1));
     liquidSurface.setAttribute("fill", colour);
-    const cup = cupGroup.querySelector("path");
+    const cup = cupTilt.querySelector("path");
     if (cup) cup.setAttribute("fill", tubeDrops.length ? colour : "var(--col-d-empty, #EDE7FA)");
   };
 
@@ -870,6 +976,30 @@ export function createScene(container: HTMLElement): Scene {
 
     setTotals(totals: Record<Channel, number>) {
       for (const ch of ["A", "B", "C", "D"] as Channel[]) renderTotal(ch, totals[ch]);
+    },
+
+    setRotator(state: RotatorState, deg: number | null, target?: number, message?: string) {
+      rotatorState = state;
+      rotatorDeg = deg;
+      rotatorTarget = target ?? null;
+      if (state === "moving" && target !== undefined) cupTarget = target;
+      else if (state === "homing") cupTarget = 0;
+      else if (deg !== null) cupTarget = deg;
+      robotGroup.querySelector("title")?.remove();
+      if (message) {
+        const t = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        t.textContent = message;
+        robotGroup.appendChild(t);
+      }
+      renderRobot();
+    },
+
+    onRotate(cb: (deg: number) => void) {
+      rotateCallbacks.push(cb);
+    },
+
+    onRotatorConnect(cb: () => void) {
+      connectCallbacks.push(cb);
     },
 
     resetBowl() {

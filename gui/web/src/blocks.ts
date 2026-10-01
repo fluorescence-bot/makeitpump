@@ -1,6 +1,6 @@
 import Sortable from "sortablejs";
-import type { Block, PumpBlock, PauseBlock, Channel, ChannelPump } from "./types";
-import { DEFAULT_SPEED, pumpSeconds } from "./flow";
+import type { Block, PumpBlock, PauseBlock, RotateBlock, Channel, ChannelPump } from "./types";
+import { DEFAULT_SPEED, ROTATE_MAX_DEG, pumpSeconds, rotateError } from "./flow";
 
 interface CreateBlockEditorOpts {
   getNames: () => Record<Channel, string>;
@@ -55,13 +55,17 @@ export function createBlockEditor(
     return Math.random().toString(36).substr(2, 9);
   }
 
+  function newRotateBlock(): RotateBlock {
+    return { id: generateId(), type: "rotate", deg: 30 };
+  }
+
   function renderBlocks(): void {
     listEl.innerHTML = "";
 
     if (blocks.length === 0) {
       const empty = document.createElement("div");
       empty.className = "blocks-empty";
-      empty.textContent = "Drag a 💧 Pump or ⏸ Pause here ☁️";
+      empty.textContent = "Drag a 💧 Pump, ⏸ Pause or 🦾 Rotate here ☁️";
       listEl.appendChild(empty);
       return;
     }
@@ -255,8 +259,8 @@ export function createBlockEditor(
 
         card.appendChild(grid);
       } else {
-        // Pause block
-        const pauseBlock = block as PauseBlock;
+        // Pause and rotate blocks: one slim row with a single number field
+        const isRotate = block.type === "rotate";
 
         const content = document.createElement("div");
         content.className = "block-content block-pause";
@@ -266,28 +270,38 @@ export function createBlockEditor(
 
         const pauseLabel = document.createElement("div");
         pauseLabel.className = "pause-label";
-        pauseLabel.innerHTML = `<span class="pause-emoji">⏸</span><span class="pause-title">Pause</span>`;
+        pauseLabel.innerHTML = isRotate
+          ? `<span class="pause-emoji">🦾</span><span class="pause-title">Rotate</span>`
+          : `<span class="pause-emoji">⏸</span><span class="pause-title">Pause</span>`;
         content.appendChild(pauseLabel);
 
         const secGroup = document.createElement("div");
         secGroup.className = "block-field";
         const secLabel = document.createElement("label");
-        secLabel.textContent = "for";
+        secLabel.textContent = isRotate ? "to" : "for";
         const secInput = document.createElement("input");
         secInput.type = "number";
-        secInput.step = "0.5";
+        secInput.step = isRotate ? "5" : "0.5";
         secInput.min = "0";
+        if (block.type === "rotate") {
+          secInput.max = String(ROTATE_MAX_DEG);
+          secInput.value = String(block.deg);
+          // Out-of-range or fractional angles are kept (and shown in red) so Run can refuse them
+          if (rotateError(block.deg)) secGroup.classList.add("pump-grid-danger");
+        } else {
+          secInput.value = String((block as PauseBlock).s);
+        }
         secInput.disabled = locked;
-        secInput.value = String(pauseBlock.s);
         secInput.onchange = () => {
           const val = parseFloat(secInput.value);
-          const newBlock = { ...pauseBlock, s: isNaN(val) || val < 0 ? 0 : val };
-          blocks[i] = newBlock;
+          blocks[i] = block.type === "rotate"
+            ? { ...block, deg: isNaN(val) ? 0 : val }
+            : { ...(block as PauseBlock), s: isNaN(val) || val < 0 ? 0 : val };
           opts.onChange(blocks);
           renderBlocks();
         };
         const secUnit = document.createElement("span");
-        secUnit.textContent = "s";
+        secUnit.textContent = isRotate ? "°" : "s";
         secGroup.appendChild(secLabel);
         secGroup.appendChild(secInput);
         secGroup.appendChild(secUnit);
@@ -364,8 +378,18 @@ export function createBlockEditor(
       renderBlocks();
     };
 
+    const rotateTile = document.createElement("div");
+    rotateTile.className = "palette-tile";
+    rotateTile.textContent = "🦾 Rotate";
+    rotateTile.onclick = () => {
+      blocks.push(newRotateBlock());
+      opts.onChange(blocks);
+      renderBlocks();
+    };
+
     paletteEl.appendChild(pumpTile);
     paletteEl.appendChild(pauseTile);
+    paletteEl.appendChild(rotateTile);
   }
 
   // Set up SortableJS for the palette (clone source)
@@ -408,6 +432,8 @@ export function createBlockEditor(
             D: { ml: 0, speed: DEFAULT_SPEED },
           },
         };
+      } else if (clone.textContent?.includes("🦾")) {
+        newBlock = newRotateBlock();
       } else {
         newBlock = {
           id: generateId(),

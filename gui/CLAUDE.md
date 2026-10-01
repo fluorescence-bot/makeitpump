@@ -71,6 +71,12 @@ manually; there is no shared source.
 - `types.ts` — the shared contract types; must stay verbatim-identical to the copy in
   `CONTRACT.md`.
 
+**Cuvette rotator** (`rotator.py`): unlike the pump stubs, this is a real USB-serial driver for
+the Trinket M0 that turns the cuvette 0–60° (firmware in `../firmware/cuvette_rotator/`). Rotate
+blocks and `manual_rotate` wait for the board's `MOVE_COMPLETE`; replies are matched to their own
+command because a cancelled move's late reply can still be in the pipe. Tests use a fake board in
+`tests/test_rotator.py`. With the board plugged in, starting the app homes the motor.
+
 **Presets** are YAML/JSON programs (`presets/*.yaml`/`.json`): a name, per-channel solution labels,
 a list of blocks (pump or pause), and a repeat count. Loading an old preset that used `s` (seconds)
 per channel instead of `speed` drops `s` and resets to `DEFAULT_SPEED`, since converting would

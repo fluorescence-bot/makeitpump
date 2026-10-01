@@ -5,8 +5,17 @@ RainMixer desktop GUI application.
 Launches a pywebview window with the RainMixer interface and starts the backend API.
 """
 
+import importlib.util
+import os
 import sys
 from pathlib import Path
+
+# On Linux pywebview tries GTK first and logs a scary "No module named 'gi'"
+# traceback before falling back to Qt. Skip straight to Qt when GTK's Python
+# bindings aren't installed. Must run before webview picks its backend.
+if sys.platform.startswith("linux") and "PYWEBVIEW_GUI" not in os.environ:
+    if importlib.util.find_spec("gi") is None:
+        os.environ["PYWEBVIEW_GUI"] = "qt"
 
 import webview
 

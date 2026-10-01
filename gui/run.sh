@@ -55,24 +55,31 @@ install_uv() {
 }
 
 install_linux_deps() {
-    # pywebview on Linux uses GTK + WebKit through PyGObject ("gi"), which
-    # comes from the system package manager, not pip.
+    # pywebview on Linux prefers GTK + WebKit through PyGObject ("gi"), which
+    # comes from the system package manager, not pip. If that's unavailable it
+    # falls back to Qt (PyQt6, installed from requirements.txt), which only
+    # needs libxcb-cursor from the system. Both are best-effort here.
     if /usr/bin/python3 -c 'import gi; gi.require_version("WebKit2", "4.1")' 2>/dev/null \
         || /usr/bin/python3 -c 'import gi; gi.require_version("WebKit2", "4.0")' 2>/dev/null; then
         return
     fi
     say "Installing GTK/WebKit for the GUI window (needs sudo)"
     if have apt-get; then
-        sudo apt-get update
-        sudo apt-get install -y curl python3 python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
-            || sudo apt-get install -y curl python3 python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.0
+        sudo apt-get update || true
+        sudo apt-get install -y curl python3 libxcb-cursor0 || true
+        sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1 \
+            || sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.0 \
+            || true
     elif have dnf; then
-        sudo dnf install -y python3 python3-gobject gtk3 webkit2gtk4.1 \
-            || sudo dnf install -y python3 python3-gobject gtk3 webkit2gtk3
+        sudo dnf install -y python3 xcb-util-cursor || true
+        sudo dnf install -y python3-gobject gtk3 webkit2gtk4.1 \
+            || sudo dnf install -y python3-gobject gtk3 webkit2gtk3 \
+            || true
     elif have pacman; then
-        sudo pacman -S --needed --noconfirm python python-gobject gtk3 webkit2gtk-4.1
+        sudo pacman -S --needed --noconfirm python xcb-util-cursor || true
+        sudo pacman -S --needed --noconfirm python-gobject gtk3 webkit2gtk-4.1 || true
     else
-        die "Unknown package manager. Install PyGObject, GTK 3 and WebKit2GTK, then re-run."
+        say "Unknown package manager; skipping GTK/WebKit (the GUI will use Qt instead)."
     fi
 }
 

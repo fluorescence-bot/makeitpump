@@ -130,3 +130,5 @@ gui/
 **pywebview import error**: Make sure you're in the virtual environment and ran `pip install -r requirements.txt`
 
 **Linux GTK errors**: Install `python3-gi` and `gir1.2-webkit2-4.1` as shown above
+
+**Linux "QtPy"/"must have either QT or GTK" errors**: GTK couldn't load, so pywebview fell back to Qt. `requirements.txt` installs the Qt backend on Linux; re-run `pip install -r requirements.txt` (or just `./run.sh`). If Qt then complains about the `xcb` platform plugin, install `libxcb-cursor0` (apt) / `xcb-util-cursor` (dnf, pacman).

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fontsource/m-plus-rounded-1c": "^5.0.0",
+    "@fontsource/noto-color-emoji": "^5.3.2",
     "sortablejs": "^1.15.0"
   },
   "devDependencies": {

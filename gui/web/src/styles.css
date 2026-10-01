@@ -15,7 +15,7 @@
   --ok: #8EDFB4;
   --danger: #FF9AA8;
   --radius: 22px;
-  --font: "M PLUS Rounded 1c", system-ui, sans-serif;
+  --font: "M PLUS Rounded 1c", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
   color-scheme: light;
 }
 

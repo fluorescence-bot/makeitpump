@@ -1,6 +1,8 @@
 import "@fontsource/m-plus-rounded-1c/400.css";
 import "@fontsource/m-plus-rounded-1c/700.css";
 import "@fontsource/m-plus-rounded-1c/800.css";
+// Bundled emoji font: Linux often has none (emoji rendered as blank space).
+import "@fontsource/noto-color-emoji/400.css";
 import "./styles.css";
 
 import { getApi, onEvent, isMock, pumpsError } from "./bridge";

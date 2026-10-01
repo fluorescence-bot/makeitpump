@@ -226,7 +226,7 @@
   border: 2px solid var(--col-d-ink, #9A7FD6);
   border-radius: 12px;
   padding: 5px 8px;
-  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji");
   font-size: 13px;
   font-weight: 600;
   color: var(--ink, #5B4B7A);
@@ -258,7 +258,7 @@
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji");
   font-size: 11px;
   font-weight: 600;
   color: var(--ink, #5B4B7A);
@@ -290,7 +290,7 @@
 
 /* "click to pump x mL" inside each cloud and the funnel rim */
 .rm-dose-hint {
-  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji");
   font-size: 12px;
   font-weight: 700;
   fill: var(--ink, #5B4B7A);
@@ -309,7 +309,7 @@
   background: white;
   border: 2px solid var(--col-d-ink, #9A7FD6);
   border-radius: 999px;
-  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif);
+  font-family: var(--font, "M PLUS Rounded 1c", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji");
   font-size: 12px;
   font-weight: 700;
   color: var(--ink, #5B4B7A);

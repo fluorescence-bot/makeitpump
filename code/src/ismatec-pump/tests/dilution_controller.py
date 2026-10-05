@@ -20,6 +20,7 @@ class DilutionController:
         # use pump.channels instead of hardcoding 1-4
         for ch in self.pump.channels:
             await self.pump.set_mode(ch, Mode.VOL_AT_RATE)
+            await self.pump.set_setpoint_type(ch, Setpoint.FLOWRATE)
         await self.pump.set_event_messaging(True)
 
     async def run_step(self, step, timeout: float = 600, poll: float = 0.1):

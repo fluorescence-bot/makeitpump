@@ -8,6 +8,11 @@ from dilution_controller import DilutionController
 import asyncio
 
 from ismatec import Pump
+from dilution_controller import DilutionController
+
+import logging
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger('ismatec').setLevel(logging.DEBUG)
 
 # TODO: Change to COM if on if on Windows. /dev is unix specific.
 ADDRESS = '/dev/ttyACM0'

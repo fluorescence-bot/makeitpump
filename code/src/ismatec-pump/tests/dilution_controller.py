@@ -23,29 +23,44 @@ class DilutionController:
             await self.pump.set_setpoint_type(ch, Setpoint.FLOWRATE)
         await self.pump.set_event_messaging(True)
 
-    async def run_step(self, step, timeout: float = 600, poll: float = 0.1):
+    async def run_step(self, step, rate_fraction: float = 0.9, poll: float = 0.1):
         active = [ch for ch, vol in enumerate(step, start=1) if vol > 0]
         if not active:
             return
 
-        # 1. Configure every active channel (nothing moves yet)
+        # 1. Configure each channel (nothing moves yet)
+        est_seconds = 0.0
         for ch in active:
-            await self.pump.set_flow_rate(ch, self.rate)
-            await self.pump.set_volume_setpoint(ch, step[ch - 1])
+            vol = step[ch - 1]
+            reply = await self.pump.get_max_flow_rate(ch, calibrated=True)
+            rate = float(reply.split(' ')[0]) * rate_fraction
+            await self.pump.set_flow_rate(ch, rate)
+            await self.pump.set_volume_setpoint(ch, vol)
+            est_seconds = max(est_seconds, vol / rate * 60)
 
-        # 2. Mark them running BEFORE starting, so the wait loop can't see a stale False
-        self.pump._set_running_status(True, active)
-
-        # 3. Start back to back
-        if len(active) == len(self.pump.channels):
-            self.pump.hw.command('0H')            # broadcast: all channels at once
-        else:
+        # 2. Start one by one and check each one actually started
+        failed = []
+        for ch in active:
+            if not await self.pump.start(ch):
+                failed.append(ch)
+        if failed:
             for ch in active:
-                await self.pump.start(ch)
+                await self.pump.stop(ch)                      # don't leave the others running
+            reasons = {ch: await self.pump.get_run_failure_reason(ch) for ch in failed}
+            raise RuntimeError(f"Start failed (cause code, limit): {reasons}")
 
-        # 4. Wait until every started channel reports not running
-        deadline = time.monotonic() + timeout
+        # 3. Wait for every started channel to report not running
+        deadline = time.monotonic() + est_seconds * 1.5 + 10
+        next_check = time.monotonic() + 1.0
         while any(self.pump.running[ch] for ch in active):
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"Channels {active} still running after {timeout}s")
+            now = time.monotonic()
+            if now > deadline:
+                raise TimeoutError(f"Channels {active} still running after {est_seconds:.0f}s estimate")
+            if now >= next_check:
+                # Fallback: events can be missed, so ask the pump itself
+                reply = self.pump.hw.query('1E')
+                if reply.strip().startswith('-'):          # '-' = whole pump stopped
+                    self.pump._set_running_status(False, active)
+                    break
+                next_check = now + 2.0
             await asyncio.sleep(poll)

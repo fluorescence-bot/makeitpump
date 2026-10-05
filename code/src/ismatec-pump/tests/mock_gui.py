@@ -21,7 +21,7 @@ def show(r):
     print(f"Step {r['step']}/{r['of']} done: {r['a_ml']} ml A, {r['b_ml']} ml B")
 
 async def main():
-    pump = Pump(ADDRESS);
+    pump = Pump(ADDRESS, debug = True);
     controller = DilutionController(pump)
     await controller.setup() 
 

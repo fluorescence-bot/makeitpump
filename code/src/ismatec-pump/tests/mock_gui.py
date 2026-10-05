@@ -26,8 +26,8 @@ async def main():
     is_finished = False
 
     # Example sequence. Volume in ml for channel 1 and 2 in each tuple.
-    sequence = [(5,2,0,0),
-                (0, 1, 0, 0)]
+    sequence = [(0.001,0.002,0,0),
+                (0.0, 0.0, 0, 0.003)]
 
     input("Press Return to start the dilution (Ctrl+C to abort)...")
     

@@ -9,6 +9,11 @@ from unittest.mock import MagicMock
 from ismatec.driver import Pump as RealPump
 from ismatec.util import Mode, Rotation, Setpoint, Tubing, pack_time1, pack_volume1
 
+import asyncio
+import threading
+import time
+
+SCALING_FACTOR = 0.1
 
 class AsyncClientMock(MagicMock):
     """Magic mock that works with async methods."""
@@ -27,35 +32,60 @@ class Pump(RealPump):
         self.channels = [1, 2, 3, 4]
         self.running = {channel: False for channel in self.channels}
         self.state = {
-            'channel_addressing': False,  # FIXME verify
-            'event_messaging': False,  # FIXME verify
-            'channels': []
+            'channel_addressing': False,
+            'event_messaging': False,
+            'channels': [
+                {
+                    'flowrate': 1.0 * c,
+                    'rotation': Rotation.CLOCKWISE,
+                    'mode': Mode.RPM,
+                    'diameter': Tubing[0],
+                    'setpoint_type': Setpoint.RPM,
+                    'rpm': 0.0,
+                    'volume': 0.0,
+                    'cycles': 0,
+                    'runtime': 0.0,
+                }
+                for c in self.channels
+            ],
         }
-        self.state['channels'] = [
-            {
-                'flowrate': 1.0 * c,
-                'rotation': Rotation.CLOCKWISE,
-                'mode': Mode.RPM,
-                'diameter': Tubing[0],
-                'setpoint_type': Setpoint.RPM,
-                'rpm': 0.0,
-                'volume': 0.0,
-                'cycles': 0,
-                'runtime': 0.0,
-            }
-            for c in self.channels]
         self.hw = Communicator()
         self.hw.channels = self.channels
         self.hw.running = self.running
         self.hw.state = self.state
 
+        # Wire the mock's "unsolicited" start/stop events back into this Pump,
+        # mirroring what SerialCommunicator.loop() does for real hardware
+        # (the '^U'/'^X' lines -> running_callback).
+        self.hw.on_start = lambda ch: self._set_running_status(True, ch)
+        self.hw.on_stop = self._handle_stopped
+
+        self._loop = asyncio.get_event_loop()
+        self._done_events = {ch: asyncio.Event() for ch in self.channels}
+
+    def _handle_stopped(self, channel):
+        """Called from the background pumping thread when it finishes."""
+        self._set_running_status(False, channel)
+        # We're on a plain threading.Thread here, not the event loop, so
+        # flip the asyncio.Event in a thread-safe way.
+        self._loop.call_soon_threadsafe(self._done_events[channel].set)
+
     async def __aenter__(self, *args):
-        """Set up connection."""
         return self
 
     async def __aexit__(self, *args):
-        """Close connection."""
         pass
+
+    async def dispense_volume(self, channel: int, vol: float, rate: float, units='ml/min'):
+        """Dispense `vol` mL at `rate`, and wait until it has ACTUALLY finished.
+
+        Use this instead of `dispense_vol_at_rate` when you need to tell the
+        user "X ml has been pumped" only once it's true.
+        """
+        self._done_events[channel].clear()
+        await self.dispense_vol_at_rate(channel, vol, rate, units=units)
+        await self._done_events[channel].wait()
+        return {"channel": channel, "volume_ml": vol}
 
 
 class Communicator(MagicMock):
@@ -96,8 +126,21 @@ class Communicator(MagicMock):
         elif command in ['!', '?']:
             return ('0.281 ml/min' if self.state['channels'][channel - 1]['diameter'] == 0.19
                     else '0.138 ml/min')
+        elif command.startswith('f'):  # SET flowrate — register only, no motion yet
+            self.state['channels'][channel - 1]['flowrate'] = self._decode_packed(command)
+            return '*'
+        elif command.startswith('v'):  # SET volume — register only, no motion yet
+            self.state['channels'][channel - 1]['volume'] = self._decode_packed(command)
+            return '*'
         else:
             raise NotImplementedError
+
+    @staticmethod
+    def _decode_packed(command: str) -> float:
+        """Decode a 'volume type 2' packed value, e.g. 'f5000+1' -> 50.0."""
+        mantissa = float(command[1:5]) / 1000
+        exponent = int(command[-2:])
+        return mantissa * 10 ** exponent
 
     def _get_cannot_run_response(self, channel):
         """Return the responses for when the pump failed to run."""
@@ -134,33 +177,51 @@ class Communicator(MagicMock):
         elif command == 'H':  # start
             if self._check_pump_will_run(channel):
                 self.running[channel] = True
+                vol = self.state['channels'][channel - 1]['volume']
+                rate = self.state['channels'][channel - 1]['flowrate']
+                if vol and rate:
+                    # Volume-at-rate run: simulate it finishing in the
+                    # background, then fire the "stopped" event.
+                    threading.Thread(
+                        target=self._simulate_dispense,
+                        args=(channel, vol, rate),
+                        daemon=True,
+                    ).start()
+                elif self.on_start:
+                    self.on_start(channel)  # continuous-flow run, no auto-stop
             else:
                 return False
         elif command == 'I':  # stop
             self.running[channel] = False
         elif command in [m.value for m in Mode]:
             self.state['channels'][channel - 1]['mode'] = Mode(command).name
-        elif command.startswith('xf'):  # set mode to RPM (0) or flowrate (1)
-            type = Setpoint(command[-1]).name
-            self.state['channels'][channel - 1]['setpoint_type'] = type
-        elif command.startswith('+'):  # set tubing ID
+        elif command.startswith('xf'):
+            self.state['channels'][channel - 1]['setpoint_type'] = Setpoint(command[-1]).name
+        elif command.startswith('+'):
             self.state['channels'][channel - 1]['diameter'] = float(command[1:]) / 100
-        elif command.startswith('S'):  # set speed (RPM)
+        elif command.startswith('S'):
             self.state['channels'][channel - 1]['rpm'] = float(command[1:]) / 100
-        elif command.startswith('f'):  # set flowrate (in mL/min)
-            exponent = int(command[-2:])
-            matissa = float(command[1:5]) / 1000
-            self.state['channels'][channel - 1]['flowrate'] = float(matissa * 10**exponent)
-        elif command.startswith('v'):  # set volume (in mL)
-            exponent = int(command[-2:])
-            matissa = float(command[1:5]) / 1000
-            self.state['channels'][channel - 1]['volume'] = float(matissa * 10**exponent)
-        elif command.startswith('xT'):  # set runtime (in min)
+        elif command.startswith('f'):
+            self.state['channels'][channel - 1]['flowrate'] = self._decode_packed(command)
+        elif command.startswith('v'):
+            self.state['channels'][channel - 1]['volume'] = self._decode_packed(command)
+        elif command.startswith('xT'):
             seconds = float(command[3:]) / 10
             self.state['channels'][channel - 1]['runtime'] = seconds / 60
         else:
             raise NotImplementedError
         return True
+
+    def _simulate_dispense(self, channel, vol_ml, rate_ml_per_min):
+        """Runs in a background thread — this is the actual 'mock pumping'."""
+        if self.on_start:
+            self.on_start(channel)
+        print(f"Pumping on channel {channel}: {vol_ml} ml at {rate_ml_per_min} ml/min")
+        pump_time = abs(vol_ml / rate_ml_per_min) * SCALING_FACTOR
+        time.sleep(pump_time)
+        print(f"Done with channel {channel}")
+        if self.on_stop:
+            self.on_stop(channel)
 
     def _check_pump_will_run(self, channel):
         """Return if the pump will run with the current settings."""

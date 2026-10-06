@@ -8,6 +8,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import font as tkfont
 
 import serial  # pip install pyserial
 
@@ -34,6 +35,22 @@ STEP_TYPES = {"in": "Pump in", "out": "Pump out", "wait": "Wait"}
 STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
+
+# ---- Theme -------------------------------------------------------------------
+BG = "#eef1f5"            # window background, behind the cards
+CARD = "#ffffff"          # card background
+BORDER = "#d5dbe3"
+TEXT = "#1f2933"
+MUTED = "#66727f"
+ACCENT = "#2563eb"
+ACCENT_HOVER = "#1d4ed8"
+ACCENT_SOFT = "#dbeafe"   # current step row
+SUCCESS = "#15803d"       # tick on finished steps
+DANGER = "#dc2626"
+DONE_BG = "#f3f4f6"       # finished step row
+NA_BG = "#e5e7eb"         # field that doesn't apply to the row's step type
+HOVER_BG = "#e8edf3"
+BUTTON_BG = "#f6f8fa"
 
 # ---- Pump configuration ------------------------------------------------------
 # Use COMx on Windows. NOTE: must be a different port than the Arduino arm.
@@ -172,7 +189,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reglo ICC Pump Control")
-        self.minsize(720, 560)
+        self.minsize(820, 640)
+        self._apply_theme()
 
         # Pump side: DilutionController is async, so it lives on its own
         # asyncio event loop running in a background thread. The Pump and
@@ -235,19 +253,114 @@ class App(tk.Tk):
         else:
             on_ok(result)
 
+    # ---- theme -------------------------------------------------------------
+    def _apply_theme(self):
+        """ttk styles on top of 'clam' (the most restylable built-in theme).
+        Cards are white frames on a light grey window."""
+        self.configure(background=BG)
+        default = tkfont.nametofont("TkDefaultFont")
+        default.configure(size=10)
+        for name in ("TkTextFont", "TkMenuFont"):
+            tkfont.nametofont(name).configure(size=10)
+        family = default.actual("family")
+        self.font_title = (family, 15, "bold")
+        self.font_heading = (family, 11, "bold")
+        self.font_small_bold = (family, 9, "bold")
+
+        st = ttk.Style(self)
+        st.theme_use("clam")
+        st.configure(".", background=BG, foreground=TEXT, bordercolor=BORDER,
+                     lightcolor=BORDER, darkcolor=BORDER, troughcolor=BG,
+                     focuscolor=ACCENT, selectbackground=ACCENT,
+                     selectforeground="white", font=default)
+        st.configure("TFrame", background=BG)
+        st.configure("Card.TFrame", background=CARD, relief="solid",
+                     borderwidth=1)
+        st.configure("Plain.Card.TFrame", relief="flat", borderwidth=0)
+        st.configure("TLabel", background=BG)
+        st.configure("Card.TLabel", background=CARD)
+        st.configure("Muted.Card.TLabel", background=CARD, foreground=MUTED)
+        st.configure("Title.Card.TLabel", background=CARD, font=self.font_title)
+        st.configure("Heading.Card.TLabel", background=CARD,
+                     font=self.font_heading)
+        st.configure("ColHead.Card.TLabel", background=CARD, foreground=MUTED,
+                     font=self.font_small_bold)
+        st.configure("Status.TLabel", background=BG, foreground=MUTED)
+        # step-row labels: upcoming, current, finished
+        st.configure("Row.Card.TLabel", background=CARD, foreground=MUTED)
+        st.configure("Current.Row.Card.TLabel", background=CARD,
+                     foreground=ACCENT, font=self.font_small_bold)
+        st.configure("Done.Row.Card.TLabel", background=CARD,
+                     foreground=SUCCESS)
+
+        st.configure("TButton", background=BUTTON_BG, padding=(12, 5),
+                     relief="raised", borderwidth=1)
+        st.map("TButton",
+               background=[("disabled", CARD), ("pressed", NA_BG),
+                           ("active", HOVER_BG)],
+               foreground=[("disabled", "#a0a8b3")],
+               bordercolor=[("focus", ACCENT)])
+        st.configure("Accent.TButton", background=ACCENT, foreground="white",
+                     bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                     font=self.font_heading)
+        st.map("Accent.TButton",
+               background=[("disabled", "#a9bff0"), ("pressed", ACCENT_HOVER),
+                           ("active", ACCENT_HOVER)],
+               foreground=[("disabled", "white")],
+               bordercolor=[("disabled", "#a9bff0")],
+               lightcolor=[("disabled", "#a9bff0")],
+               darkcolor=[("disabled", "#a9bff0")])
+        # small borderless icon buttons (lock, revert, delete)
+        icon = dict(padding=(4, 2), background=CARD, relief="flat",
+                    bordercolor=CARD, lightcolor=CARD, darkcolor=CARD)
+        st.configure("Icon.TButton", **icon)
+        st.configure("Danger.Icon.TButton", **icon)
+        st.map("Danger.Icon.TButton",
+               background=[("disabled", CARD), ("active", "#fee2e2")],
+               foreground=[("disabled", "#c4c9d0"), ("active", DANGER)])
+
+        for widget in ("TEntry", "TCombobox"):
+            st.configure(widget, fieldbackground=CARD, padding=(6, 3),
+                         arrowcolor=MUTED)
+            st.map(widget,
+                   fieldbackground=[("disabled", DONE_BG), ("readonly", DONE_BG)],
+                   foreground=[("disabled", "#a0a8b3")],
+                   bordercolor=[("focus", ACCENT)],
+                   lightcolor=[("focus", ACCENT)])
+        # a readonly combobox is still a choice, not a locked field
+        st.map("TCombobox",
+               fieldbackground=[("disabled", DONE_BG), ("readonly", CARD)],
+               foreground=[("disabled", "#a0a8b3")],
+               bordercolor=[("focus", ACCENT)],
+               lightcolor=[("focus", ACCENT)])
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+
+        st.configure("Card.TCheckbutton", background=CARD)
+        st.map("Card.TCheckbutton", background=[("active", CARD)],
+               indicatorbackground=[("selected", ACCENT)],
+               indicatorforeground=[("selected", "white")])
+        st.configure("Vertical.TScrollbar", background=NA_BG, troughcolor=CARD,
+                     bordercolor=CARD, arrowcolor=MUTED, relief="flat")
+
+    def _card(self, parent, **pack):
+        card = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        card.pack(**pack)
+        return card
+
     # ---- layout ------------------------------------------------------------
     def _build_header(self):
-        header = ttk.Frame(self, padding=10)
-        header.pack(fill="x")
+        header = self._card(self, fill="x", padx=12, pady=(12, 6))
         header.columnconfigure(0, weight=1)
 
-        left = ttk.Frame(header)
+        left = ttk.Frame(header, style="Plain.Card.TFrame")
         left.grid(row=0, column=0, rowspan=2, sticky="nw")
-        self.current_label = ttk.Label(left, text="Current: preset1",
-                                       font=("TkDefaultFont", 12, "bold"))
-        self.current_label.pack(anchor="w")
-        consts = ttk.Frame(left)
-        consts.pack(anchor="w", pady=(4, 0))
+        ttk.Label(left, text="PRESET", style="Muted.Card.TLabel",
+                  font=self.font_small_bold).pack(anchor="w")
+        self.current_label = ttk.Label(left, text="preset1",
+                                       style="Title.Card.TLabel")
+        self.current_label.pack(anchor="w", pady=(0, 8))
+        consts = ttk.Frame(left, style="Plain.Card.TFrame")
+        consts.pack(anchor="w")
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
         self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
@@ -260,57 +373,73 @@ class App(tk.Tk):
                  ("ch4_volume", "Ch 4 output volume (ml):", self.ch4_var),
                  ("mix_pause", "Mixing pause (s):", self.mix_var),
                  ("measure_pause", "Measurement pause (s):", self.measure_var)]):
-            ttk.Label(consts, text=text).grid(row=r, column=0, sticky="w")
+            ttk.Label(consts, text=text, style="Card.TLabel").grid(
+                row=r, column=0, sticky="w", padx=(0, 10))
             e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
-            e.grid(row=r, column=1, padx=(6, 0), pady=(0, 2))
+            e.grid(row=r, column=1, pady=2)
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
-            lock = ttk.Button(consts, text=LOCKED, width=3,
+            lock = ttk.Button(consts, text=LOCKED, width=3, style="Icon.TButton",
                               command=lambda k=key: self.on_toggle_lock(k))
-            lock.grid(row=r, column=2, padx=(4, 0), pady=(0, 2))
+            lock.grid(row=r, column=2, padx=(6, 0), pady=2)
             revert = ttk.Button(consts, text=REVERT, width=3,
+                                style="Icon.TButton",
                                 command=lambda k=key: self.on_revert_const(k))
-            revert.grid(row=r, column=3, padx=(2, 0), pady=(0, 2))
+            revert.grid(row=r, column=3, padx=(3, 0), pady=2)
             self.consts[key] = {"var": var, "entry": e, "lock_btn": lock,
                                 "revert_btn": revert, "locked": True}
             var.trace_add("write", lambda *_, k=key: self._refresh_const(k))
 
-        right = ttk.Frame(header)
+        right = ttk.Frame(header, style="Plain.Card.TFrame")
         right.grid(row=0, column=1, sticky="ne")
-        self.preset_box = ttk.Combobox(right, textvariable=self.chosen_preset,
+        ttk.Label(right, text="Load preset", style="Muted.Card.TLabel").pack(
+            anchor="w", pady=(0, 2))
+        pick = ttk.Frame(right, style="Plain.Card.TFrame")
+        pick.pack(anchor="e")
+        self.preset_box = ttk.Combobox(pick, textvariable=self.chosen_preset,
                                        values=list(PRESETS), state="readonly",
                                        width=18)
         self.preset_box.pack(side="left")
-        self.ok_btn = ttk.Button(right, text="OK", width=4,
-                                 command=self.on_choose_preset)
+        self.ok_btn = ttk.Button(pick, text="OK", command=self.on_choose_preset)
         self.ok_btn.pack(side="left", padx=(6, 0))
 
         self.save_btn = ttk.Button(header, text="Save changes",
                                    command=self.on_save)
-        self.save_btn.grid(row=1, column=1, sticky="ne", pady=(8, 0))
+        self.save_btn.grid(row=1, column=1, sticky="se")
 
     def _build_steps(self):
-        body = ttk.Frame(self, padding=(10, 10, 10, 0))
-        body.pack(fill="both", expand=True)
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=6)
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
 
-        ttk.Label(body, text="Steps",
-                  font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0,
-                                                          sticky="w", pady=(0, 4))
+        steps_card = ttk.Frame(body, style="Card.TFrame", padding=14)
+        steps_card.grid(row=0, column=0, sticky="nsew")
+        steps_card.columnconfigure(0, weight=1)
+        steps_card.rowconfigure(1, weight=1)
+        ttk.Label(steps_card, text="Steps", style="Heading.Card.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 8))
 
-        table_frame = ttk.Frame(body, relief="sunken", borderwidth=1)
+        table_frame = ttk.Frame(steps_card, style="Plain.Card.TFrame")
         table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(table_frame, highlightthickness=0)
+        self.canvas = tk.Canvas(table_frame, highlightthickness=0,
+                                background=CARD)
         scroll = ttk.Scrollbar(table_frame, orient="vertical",
                                command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=scroll.set)
+        def set_scroll(first, last):
+            """Only show the scrollbar when the steps don't fit."""
+            if float(first) <= 0 and float(last) >= 1:
+                scroll.grid_remove()
+            else:
+                scroll.grid()
+            scroll.set(first, last)
+        self.canvas.configure(yscrollcommand=set_scroll)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
 
-        self.grid_frame = ttk.Frame(self.canvas)
+        self.grid_frame = ttk.Frame(self.canvas, style="Plain.Card.TFrame")
         win = self.canvas.create_window((0, 0), window=self.grid_frame,
                                         anchor="nw")
         self.grid_frame.bind(
@@ -324,41 +453,47 @@ class App(tk.Tk):
         # the delete buttons go in one more column after these
         headers = ["", "Type"] + COLUMN_HEADERS + ["Wait (s)"]
         for c, name in enumerate(headers):
-            ttk.Label(self.grid_frame, text=name, anchor="center",
-                      font=("TkDefaultFont", 10, "bold")).grid(
-                row=0, column=c, sticky="ew", padx=1, pady=1)
+            ttk.Label(self.grid_frame, text=name.upper(), anchor="center",
+                      style="ColHead.Card.TLabel").grid(
+                row=0, column=c, sticky="ew", padx=2, pady=(0, 4))
             if c >= 2:
                 self.grid_frame.columnconfigure(c, weight=1, uniform="col")
 
         self._num_cols = len(headers)
 
         # One row per step; this bar sits under the last row and adds steps.
-        self.add_bar = ttk.Frame(self.grid_frame)
-        ttk.Label(self.add_bar, text="Add row:").pack(side="left", padx=(0, 6))
+        self.add_bar = ttk.Frame(self.grid_frame, style="Plain.Card.TFrame")
+        ttk.Label(self.add_bar, text="Add row:", style="Muted.Card.TLabel").pack(
+            side="left", padx=(0, 8))
         for text, kind in [("Pause", "wait"), ("Output", "out"),
                            ("Input", "in")]:
-            ttk.Button(self.add_bar, text=text, width=9,
+            ttk.Button(self.add_bar, text="+ " + text,
                        command=lambda k=kind: self.on_add_step(k)).pack(
-                side="left", padx=(0, 4))
+                side="left", padx=(0, 6))
         self._place_add_bar()
 
-        side = ttk.Frame(body, padding=(12, 0, 0, 0))
-        side.grid(row=1, column=1, sticky="n")
+        side = ttk.Frame(body, style="Card.TFrame", padding=14)
+        side.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        ttk.Label(side, text="Run", style="Heading.Card.TLabel").pack(
+            anchor="w", pady=(0, 8))
         self.init_btn = ttk.Button(side, text="Initialize", width=16,
                                    command=self.on_initialize)
-        self.init_btn.pack(pady=(0, 10), ipady=6)
+        self.init_btn.pack(fill="x", ipady=4)
+        ttk.Separator(side).pack(fill="x", pady=12)
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
-        self.run_btn.pack(ipady=6)
-        self.run_all_btn = ttk.Button(side, text="Run all", width=16,
+        self.run_btn.pack(fill="x", ipady=4)
+        self.run_all_btn = ttk.Button(side, text="\u25b6  Run all", width=16,
+                                      style="Accent.TButton",
                                       command=self.on_run_all, state="disabled")
-        self.run_all_btn.pack(pady=(10, 0), ipady=6)
+        self.run_all_btn.pack(fill="x", pady=(8, 0), ipady=6)
         self.stop_btn = ttk.Button(side, text="Stop after step", width=16,
                                    command=self.on_stop, state="disabled")
-        self.stop_btn.pack(pady=(4, 0), ipady=6)
+        self.stop_btn.pack(fill="x", pady=(8, 0), ipady=4)
+        ttk.Separator(side).pack(fill="x", pady=12)
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
-                        variable=self.duplicate_next).pack(pady=(10, 0),
-                                                           anchor="w")
+                        style="Card.TCheckbutton",
+                        variable=self.duplicate_next).pack(anchor="w")
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -370,20 +505,24 @@ class App(tk.Tk):
             var = tk.StringVar(value=value)
             var.trace_add("write", lambda *_: self._update_run_state())
             e = tk.Entry(self.grid_frame, justify="center", width=10,
-                         relief="solid", borderwidth=1, textvariable=var)
+                         relief="flat", borderwidth=0, textvariable=var,
+                         highlightthickness=1, highlightbackground=BORDER,
+                         highlightcolor=ACCENT, foreground=TEXT,
+                         insertbackground=TEXT)
             e.var = var   # keep a reference, or Tk drops the trace
-            e.grid(row=grid_row, column=c, sticky="ew", padx=1, pady=1, ipady=3)
+            e.grid(row=grid_row, column=c, sticky="ew", padx=2, pady=2, ipady=4)
             return e
 
-        lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6, anchor="w")
-        lbl.grid(row=grid_row, column=0, padx=(2, 4), pady=1, sticky="ew")
+        lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6, anchor="w",
+                        style="Row.Card.TLabel")
+        lbl.grid(row=grid_row, column=0, padx=(2, 4), pady=2, sticky="ew")
         self.row_buttons.append(lbl)
 
         type_var = tk.StringVar(value=STEP_TYPES[kind])
         box = ttk.Combobox(self.grid_frame, textvariable=type_var,
                            values=list(STEP_TYPES.values()),
                            state="readonly", width=9)
-        box.grid(row=grid_row, column=1, sticky="ew", padx=1, pady=1)
+        box.grid(row=grid_row, column=1, sticky="ew", padx=2, pady=2)
         box.bind("<<ComboboxSelected>>", lambda ev: self._on_type_changed(r))
         self.type_vars.append(type_var)
         self.type_boxes.append(box)
@@ -399,8 +538,9 @@ class App(tk.Tk):
         wait = make_entry(self._num_cols - 1, data.get("seconds", ""))
         self.wait_cells.append(wait)
         delete = ttk.Button(self.grid_frame, text="\U0001F5D1", width=3,
+                            style="Danger.Icon.TButton",
                             command=lambda: self.on_delete_row(r))
-        delete.grid(row=grid_row, column=self._num_cols, padx=(4, 2), pady=1)
+        delete.grid(row=grid_row, column=self._num_cols, padx=(6, 2), pady=2)
         self.delete_btns.append(delete)
         self.row_widgets.append([lbl, box, *row_entries, wait, delete])
         self._place_add_bar()
@@ -416,15 +556,36 @@ class App(tk.Tk):
 
     def _place_add_bar(self):
         self.add_bar.grid(row=len(self.row_buttons) + 1, column=0,
-                          columnspan=self._num_cols, sticky="w",
-                          padx=2, pady=(6, 4))
+                          columnspan=self._num_cols + 1, sticky="w",
+                          padx=2, pady=(10, 4))
 
     def _build_footer(self):
-        footer = ttk.Frame(self, padding=10)
+        footer = ttk.Frame(self, padding=(14, 6, 12, 12))
         footer.pack(fill="x")
-        ttk.Label(footer, textvariable=self.status).pack(side="left")
-        ttk.Button(footer, text="Exit", width=14,
+        self.status_dot = tk.Canvas(footer, width=10, height=10,
+                                    highlightthickness=0, background=BG)
+        self.status_dot.create_oval(1, 1, 9, 9, fill=MUTED, outline="",
+                                    tags="dot")
+        self.status_dot.pack(side="left", padx=(0, 8))
+        ttk.Label(footer, textvariable=self.status,
+                  style="Status.TLabel").pack(side="left")
+        ttk.Button(footer, text="Exit", width=10,
                    command=self.on_exit).pack(side="right")
+        self.status.trace_add("write", lambda *_: self._update_status_dot())
+
+    def _update_status_dot(self):
+        """Blue while running, green when ready, red on errors, grey before
+        Initialize."""
+        text = self.status.get().lower()
+        if "error" in text or "failed" in text:
+            colour = DANGER
+        elif self.busy:
+            colour = ACCENT
+        elif self.initialized:
+            colour = SUCCESS
+        else:
+            colour = MUTED
+        self.status_dot.itemconfigure("dot", fill=colour)
 
     def _on_click_anywhere(self, event):
         """Clicking anything but a text field leaves the current field (Tk
@@ -457,13 +618,14 @@ class App(tk.Tk):
         pause) the upcoming rows stay editable."""
         for i, lbl in enumerate(self.row_buttons):
             if i < self.current_step:
-                text, bg = f"✓ #{i + 1}", "#e0e0e0"
+                text, bg, style = f"✓ #{i + 1}", DONE_BG, "Done.Row.Card.TLabel"
             elif i == self.current_step:
-                text, bg = f"▶ #{i + 1}", "#fff6c8"
+                text, bg, style = (f"▶ #{i + 1}", ACCENT_SOFT,
+                                   "Current.Row.Card.TLabel")
             else:
-                text, bg = f"#{i + 1}", "white"
+                text, bg, style = f"#{i + 1}", CARD, "Row.Card.TLabel"
             editable = self._row_editable(i)
-            lbl.configure(text=text)
+            lbl.configure(text=text, style=style)
             delete = self.delete_btns[i]
             if i < self.current_step:
                 delete.grid_remove()        # steps that have run stay
@@ -475,10 +637,10 @@ class App(tk.Tk):
                 state="readonly" if editable else "disabled")
             for e, applies in ([(e, kind == "in") for e in self.cells[i]]
                                + [(self.wait_cells[i], kind == "wait")]):
-                cell_bg = bg if applies else "#c8c8c8"
+                cell_bg = bg if applies else NA_BG
                 e.configure(state="normal" if editable and applies else "disabled",
                             bg=cell_bg, disabledbackground=cell_bg,
-                            disabledforeground="#555555")
+                            disabledforeground=MUTED)
 
     def _row_editable(self, i):
         """Rows that haven't run can be changed, except while a step pumps
@@ -555,7 +717,7 @@ class App(tk.Tk):
         self.current_step = 0
         self._refresh_rows()
         self._refresh_consts()
-        self.current_label.configure(text=f"Current: {name}")
+        self.current_label.configure(text=name)
 
     def _num_steps(self):
         return len(self.row_buttons)
@@ -725,6 +887,7 @@ class App(tk.Tk):
         """Update the busy/waiting state and every widget that depends on it."""
         self.busy = busy
         self.waiting = busy and waiting
+        self._update_status_dot()
         self._update_header()
         self._refresh_rows()
         self._update_run_state()

@@ -244,9 +244,10 @@ class App(tk.Tk):
         self.auto_run = False   # "Run all": start the next step automatically
         self.stopping = False   # Stop pressed; the running step still finishes
         self.initialized = False
-        # Session: from Initialize until New session / Exit. Kept in memory and
-        # only written to the database when saved (see data_store for its
-        # shape). _saved_steps = how many steps the last save included.
+        # Session: from Initialize until New session / Load / Exit. Saved to
+        # the database after every step (see data_store for its shape).
+        # _saved_steps = how many steps the last save included; fewer than
+        # logged only if an automatic save failed.
         self.session = None
         self._saved_steps = 0
         self._init_rotation = None   # rotation the arm was initialized to
@@ -573,19 +574,10 @@ class App(tk.Tk):
         self.session_label = ttk.Label(side, text="No session",
                                        style="Muted.Card.TLabel")
         self.session_label.pack(anchor="w", pady=(0, 8))
-        session_btns = ttk.Frame(side, style="Plain.Card.TFrame")
-        session_btns.pack(fill="x")
-        session_btns.columnconfigure((0, 1), weight=1, uniform="session")
-        self.save_session_btn = ttk.Button(session_btns, text="Save", width=6,
-                                           state="disabled",
-                                           command=self.on_save_session)
-        self.save_session_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4),
-                                   ipady=4)
-        self.new_session_btn = ttk.Button(session_btns, text="New", width=6,
+        self.new_session_btn = ttk.Button(side, text="New session", width=16,
                                           state="disabled",
                                           command=self.on_new_session)
-        self.new_session_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0),
-                                  ipady=4)
+        self.new_session_btn.pack(fill="x", ipady=4)
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -911,18 +903,11 @@ class App(tk.Tk):
         self._update_run_state()
 
     def _leave_session_for(self, name):
-        """Loading another preset ends the current session: warn first, and
-        offer to save unsaved steps. Returns True to go ahead."""
-        if self.session is None:
-            return True
-        what = f"Loading '{name}' ends the current session."
-        if self._session_unsaved():
-            ok = self._end_session("Load preset",
-                                   what + "\n\nSave the session first?")
-        else:
-            ok = messagebox.askokcancel("Load preset", what + "\n\nContinue?",
-                                        icon="warning", parent=self)
-        if ok:
+        """Loading another preset ends the current session. Returns True to
+        go ahead (the session is then ended)."""
+        ok = self._confirm_end_session(
+            "Load preset", f"Loading '{name}' ends the current session.")
+        if ok and self.session is not None:
             self.session = None
             self._update_session_ui()
         return ok
@@ -1310,11 +1295,16 @@ class App(tk.Tk):
         messagebox.showerror("Pump error", str(exc))
 
     def _step_done(self, _result):
+        saved = True
         if self.session is not None and self._step_log is not None:
             self.session["steps"].append(self._step_log)
+            saved = self._save_session()    # the session is saved every step
+            if not saved:
+                self.auto_run = False       # don't run steps that aren't logged
         self._step_log = None
         self.stopping = False
-        self.status.set(f"Step #{self.current_step + 1} done")
+        self.status.set(f"Step #{self.current_step + 1} done"
+                        + ("" if saved else " \u2014 not saved"))
         self.current_step += 1              # lock finished row, advance
         at_end = self.current_step >= self._num_steps()
         if at_end:
@@ -1371,6 +1361,22 @@ class App(tk.Tk):
             return self._save_session()     # stay if saving failed
         return True                         # No: discard
 
+    def _confirm_end_session(self, title, what):
+        """`what` (e.g. "Exiting ends the current session.") is about to end
+        the session. Always warn while a session is running, even though it
+        is saved after every step. If an automatic save failed, offer to save
+        first instead. Returns True to go ahead."""
+        if self.session is None:
+            return True
+        if self._session_unsaved():
+            return self._end_session(
+                title, what + "\n\nThe last steps could not be saved "
+                "automatically. Try to save them now?")
+        if self.session["steps"]:
+            what += " It is saved."
+        return messagebox.askokcancel(title, what + "\n\nContinue?",
+                                      icon="warning", parent=self)
+
     def _update_session_ui(self):
         if self.session is None:
             text = "No session"
@@ -1381,21 +1387,15 @@ class App(tk.Tk):
                 text += " \u00b7 " + ("unsaved" if self._session_unsaved()
                                       else "saved")
         self.session_label.configure(text=text)
-        self.save_session_btn.configure(
-            state="normal" if self._session_unsaved() else "disabled")
         self.new_session_btn.configure(
             state="normal" if self.initialized and not self.busy
             else "disabled")
 
-    def on_save_session(self):
-        if self._session_unsaved():
-            self._save_session()
-
     def on_new_session(self):
         """Start a new session with the same hardware set-up, and run the steps
         again from the first one."""
-        if not self._end_session("New session", "Save the current session "
-                                 "before starting a new one?"):
+        if not self._confirm_end_session(
+                "New session", "Starting a new session ends the current one."):
             return
         self.auto_run = self.stopping = False
         self._start_session()
@@ -1425,7 +1425,8 @@ class App(tk.Tk):
         card.rowconfigure(2, weight=1)
         ttk.Label(card, text="Saved sessions", style="Heading.Card.TLabel").grid(
             row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(card, text="Newest first. Unsaved sessions are not listed.",
+        ttk.Label(card, text="Newest first. Sessions without steps are not "
+                  "listed.",
                   style="Muted.Card.TLabel").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
@@ -1560,8 +1561,8 @@ class App(tk.Tk):
             # A modal dialog (e.g. rename) is open and still needs the
             # database; the window's close button can arrive anyway.
             return
-        if not self._end_session("Exit", "Save the current session before "
-                                 "exiting?"):
+        if not self._confirm_end_session("Exit",
+                                         "Exiting ends the current session."):
             return
         self.arm.close()
         self.store.close()

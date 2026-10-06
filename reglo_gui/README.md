@@ -84,20 +84,22 @@ ml were pumped on each of channels 1–4, and for a Wait step how many seconds
 it waited. A Wait step logs 0 ml on every channel. A step that fails with a
 pump error is not logged.
 
-The log is kept in memory and only written to the database when you save it:
+The session is saved to the database after every step, so nothing is lost
+if the program stops. If an automatic save fails (for example, a full disk),
+the error is shown and **Run all** stops, so no more steps run without being
+logged; the next step's save includes the unsaved steps.
 
-- **Save** (under Session) saves the session. It is only clickable when
-  steps have run since the last save. Saving again later adds the new steps
-  to the same session.
-- **New** starts a new session with the same set-up and starts the steps
-  again from step 1.
-- **New**, **Exit** (or closing the window) and **Initialize** ask whether
-  to save the current session first if it has unsaved steps: **Yes** saves
-  it, **No** discards the unsaved steps, and **Cancel** goes back.
-- **Load** (and **New preset…**, which opens the new preset) warns that this
-  ends the current session. With unsaved steps it asks whether to save them
-  first, like above; otherwise it asks to continue (**OK**) or go back
-  (**Cancel**). After loading, press **Initialize** to start a new session.
+**New session** (under Session) starts a new session with the same set-up
+and starts the steps again from step 1.
+
+**New session**, **Load**, **New preset…** (which opens the new preset)
+and **Exit** (or closing the window) end the current session, so they warn
+first and ask to continue (**OK**) or go back (**Cancel**). If an automatic
+save failed, they instead ask whether to save the unsaved steps first:
+**Yes** saves them, **No** discards them, and **Cancel** goes back.
+**Initialize** also starts a new session; it only asks when steps are
+unsaved. After loading a preset, press **Initialize** to start a new
+session.
 
 Each saved session has a header (when it started, and the preset's name and
 settings as they were used) and a footer (when it was last saved and how

@@ -79,6 +79,10 @@ ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 # the database at startup and written through to it on Save and rename.
 DB_PATH = Path(__file__).with_name("data.db")
 OLD_DB_PATH = Path(__file__).with_name("presets.db")   # name before sessions
+ICON_PATH = Path(__file__).with_name("pump-arm-icon.png")
+# X11 class name (WM_CLASS). GNOME uses it to find the app's .desktop file,
+# which gives the dock / Alt-Tab icon: see install_desktop_entry.py.
+WM_CLASS = "Reglogui"          # Tk keeps this as the class, "reglogui" as name
 PRESETS = {}
 EMPTY_PRESET = {"rotation": 0, "ch4_volume": "0", "mix_pause": "0",
                 "measure_pause": "30", "rows": []}
@@ -210,8 +214,14 @@ class ArmMock:
 
 class App(tk.Tk):
     def __init__(self):
-        super().__init__()
+        super().__init__(className=WM_CLASS)
         self.title("Reglo ICC Pump Control")
+        try:
+            # Keep a reference, or Tk drops the image. True: dialogs too.
+            self._icon = tk.PhotoImage(file=ICON_PATH)
+            self.iconphoto(True, self._icon)
+        except tk.TclError:
+            pass                            # no icon file: run without one
         self.minsize(820, 790)
         self._apply_theme()
 

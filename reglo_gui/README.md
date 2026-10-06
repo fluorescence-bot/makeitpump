@@ -21,6 +21,21 @@ pip install -r requirements.txt
 python reglo_gui.py
 ```
 
+### App icon and launcher on Linux
+
+GNOME shows an app's icon in the dock and Alt-Tab only if the app has a
+desktop entry. (GNOME never shows icons in window title bars.) To add one,
+which also adds "Reglo ICC Pump Control" to the app launcher:
+
+```bash
+.venv/bin/python install_desktop_entry.py           # install or update
+.venv/bin/python install_desktop_entry.py --remove  # remove it again
+```
+
+This writes `~/.local/share/applications/reglogui.desktop`, which starts the
+app with the Python you ran it with. Run it again if you move the folder or
+recreate the venv.
+
 ## Configuration
 
 The settings are constants at the top of `reglo_gui.py`:
@@ -147,6 +162,8 @@ exactly as entered.
 - `data_store.py`: reads and writes presets and sessions in the SQLite
   database.
 - `session_log.py`: turns a saved session into a CSV file or a text log.
+- `pump-arm-icon.png`: the window icon (`pump-arm-icon.svg`: the icon as SVG).
+- `install_desktop_entry.py`: adds the Linux desktop entry for the app icon.
 - `dilution_controller.py`: turns a step into pump commands for the
   `ismatec` library.
 - `mock_gui.py`: an old command-line test script. It is out of date and no

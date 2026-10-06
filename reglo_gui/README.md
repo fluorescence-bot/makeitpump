@@ -77,7 +77,8 @@ The rotator arm's serial protocol is described in
 
 ## Sessions
 
-A session runs from **Initialize** until you start a new session or exit.
+A session runs from **Initialize** until you start a new session, load
+another preset, or exit.
 It logs every step that finishes: when the step started, its type, how many
 ml were pumped on each of channels 1–4, and for a Wait step how many seconds
 it waited. A Wait step logs 0 ml on every channel. A step that fails with a
@@ -93,6 +94,10 @@ The log is kept in memory and only written to the database when you save it:
 - **New**, **Exit** (or closing the window) and **Initialize** ask whether
   to save the current session first if it has unsaved steps: **Yes** saves
   it, **No** discards the unsaved steps, and **Cancel** goes back.
+- **Load** (and **New preset…**, which opens the new preset) warns that this
+  ends the current session. With unsaved steps it asks whether to save them
+  first, like above; otherwise it asks to continue (**OK**) or go back
+  (**Cancel**). After loading, press **Initialize** to start a new session.
 
 Each saved session has a header (when it started, and the preset's name and
 settings as they were used) and a footer (when it was last saved and how

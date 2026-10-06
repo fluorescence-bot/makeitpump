@@ -896,11 +896,36 @@ class App(tk.Tk):
 
     # ---- callbacks ---------------------------------------------------------
     def on_choose_preset(self):
-        self._load_preset(self.chosen_preset.get())
+        name = self.chosen_preset.get()
+        if not self._leave_session_for(name):
+            self.chosen_preset.set(self.current_preset.get())
+            return
+        self._open_preset(name)
+
+    def _open_preset(self, name):
+        """Show preset `name`; Initialize is needed again before running."""
+        self._load_preset(name)
         self.initialized = False
         self.init_btn.configure(state="normal")
         self.status.set("Not initialized")
         self._update_run_state()
+
+    def _leave_session_for(self, name):
+        """Loading another preset ends the current session: warn first, and
+        offer to save unsaved steps. Returns True to go ahead."""
+        if self.session is None:
+            return True
+        what = f"Loading '{name}' ends the current session."
+        if self._session_unsaved():
+            ok = self._end_session("Load preset",
+                                   what + "\n\nSave the session first?")
+        else:
+            ok = messagebox.askokcancel("Load preset", what + "\n\nContinue?",
+                                        icon="warning", parent=self)
+        if ok:
+            self.session = None
+            self._update_session_ui()
+        return ok
 
     def _preset_name_error(self, new, old):
         """Why `new` can't be the name of preset `old` (None for a new
@@ -1044,6 +1069,8 @@ class App(tk.Tk):
                 return                      # invalid value, already shown
         else:
             preset = {**EMPTY_PRESET, "rows": []}
+        if not self._leave_session_for(name):
+            return                          # nothing created
         try:
             self.store.save(name, preset)
         except sqlite3.Error as exc:
@@ -1053,7 +1080,7 @@ class App(tk.Tk):
         PRESETS[name] = preset
         self.preset_box.configure(values=list(PRESETS))
         self.chosen_preset.set(name)
-        self.on_choose_preset()
+        self._open_preset(name)
         print(f"[gui] created preset {name} ({start})")
 
     def _preset_from_form(self):

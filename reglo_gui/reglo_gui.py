@@ -184,6 +184,8 @@ class App(tk.Tk):
         self.waiting = False    # busy, but only waiting (wait step / mixing):
                                 # upcoming rows stay editable meanwhile
         self._wait_end = None   # monotonic time the current wait ends
+        self.auto_run = False   # "Run all": start the next step automatically
+        self.stopping = False   # Stop pressed; the running step still finishes
         self.initialized = False
         self.duplicate_next = tk.BooleanVar(value=False)
         self.cells = []        # cells[row][col] -> Entry (channels 1-3)
@@ -343,6 +345,12 @@ class App(tk.Tk):
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(ipady=6)
+        self.run_all_btn = ttk.Button(side, text="Run all", width=16,
+                                      command=self.on_run_all, state="disabled")
+        self.run_all_btn.pack(pady=(10, 0), ipady=6)
+        self.stop_btn = ttk.Button(side, text="Stop after step", width=16,
+                                   command=self.on_stop, state="disabled")
+        self.stop_btn.pack(pady=(4, 0), ipady=6)
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         variable=self.duplicate_next).pack(pady=(10, 0),
                                                            anchor="w")
@@ -419,12 +427,19 @@ class App(tk.Tk):
             self._fill_blanks(index)
 
     def _update_run_state(self):
-        if not hasattr(self, "run_btn"):
+        if not hasattr(self, "stop_btn"):
             return
-        ok = (self.initialized and not self.busy
-              and self.current_step < NUM_ROWS
-              and self._row_is_complete(self.current_step))
-        self.run_btn.configure(state="normal" if ok else "disabled")
+        ok = self._can_run_current()
+        for w in (self.run_btn, self.run_all_btn):
+            w.configure(state="normal" if ok and not self.auto_run
+                        else "disabled")
+        self.stop_btn.configure(state="normal" if self.auto_run else "disabled")
+
+    def _can_run_current(self):
+        return (self.initialized and not self.busy
+                and self.current_step < NUM_ROWS
+                and not self._step_is_empty(self.current_step)
+                and self._row_is_complete(self.current_step))
 
     def _row_is_complete(self, index):
         """True when the row (and the preset constant it uses) is valid."""
@@ -621,7 +636,7 @@ class App(tk.Tk):
         if not (self.waiting and self._wait_end == end):
             return                          # that wait is over
         left = math.ceil(max(0.0, end - time.monotonic()))
-        self.status.set(f"{text} {left} s left")
+        self.status.set(f"{text} {left} s left" + self._stop_note())
         self.after(200, self._countdown, text, end)
 
     def _duplicate_into_next_row(self):
@@ -637,17 +652,52 @@ class App(tk.Tk):
         self.wait_cells[nxt].var.set(self.wait_cells[cur].get())
 
     def _step_failed(self, exc):
+        self.auto_run = self.stopping = False
         self.status.set("Pump error")
         self._set_busy(False)
         messagebox.showerror("Pump error", str(exc))
 
     def _step_done(self, _result):
+        self.stopping = False
         self.status.set(f"Step #{self.current_step + 1} done")
         self.current_step += 1              # lock finished row, advance
-        self._set_busy(False)
-        if (self.current_step >= NUM_ROWS
-                or self._step_is_empty(self.current_step)):
+        at_end = (self.current_step >= NUM_ROWS
+                  or self._step_is_empty(self.current_step))
+        if at_end:
+            if self.auto_run:
+                self.status.set("All steps done")
+            self.auto_run = False
             self.init_btn.configure(state="normal")
+        self._set_busy(False)
+        if self.auto_run:
+            self._run_next_auto()
+
+    # -- run all: go through the steps without manual interaction -------------
+    def on_run_all(self):
+        self.auto_run = True
+        self._run_next_auto()
+
+    def on_stop(self):
+        """Stop after the step that is running now (never mid-pump)."""
+        self.auto_run = False
+        if self.busy:
+            self.stopping = True
+            self.status.set(self.status.get() + self._stop_note())
+        self._update_run_state()
+
+    def _stop_note(self):
+        return " (stopping after this step)" if self.stopping else ""
+
+    def _run_next_auto(self):
+        if self.current_step < NUM_ROWS:
+            self._fill_blanks(self.current_step)    # blanks -> 0.0, as on leave
+        if not self._can_run_current():
+            self.auto_run = False
+            self.status.set(f"Run all stopped: step #{self.current_step + 1} "
+                            "is incomplete")
+            self._update_run_state()
+            return
+        self.on_run_step()
 
     def on_exit(self):
         self.arm.close()

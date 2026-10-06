@@ -76,6 +76,17 @@ def is_duration(text):
     return is_number(text) and to_float(text) >= 0
 
 
+def to_degrees(text):
+    """Arm rotation as an int, or None if invalid. Whole numbers only
+    ('30' or '30.0'), within ARM_MIN_DEG-ARM_MAX_DEG."""
+    if not is_number(text):
+        return None
+    value = to_float(text)
+    if not value.is_integer() or not ARM_MIN_DEG <= value <= ARM_MAX_DEG:
+        return None
+    return int(value)
+
+
 class ArmError(Exception):
     pass
 
@@ -230,23 +241,22 @@ class App(tk.Tk):
         self.current_label = ttk.Label(left, text="Current: preset1",
                                        font=("TkDefaultFont", 12, "bold"))
         self.current_label.pack(anchor="w")
-        self.rotation_label = ttk.Label(left, text="Rotation: 45\u00b0")
-        self.rotation_label.pack(anchor="w", pady=(4, 0))
-
         consts = ttk.Frame(left)
         consts.pack(anchor="w", pady=(4, 0))
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
         entries = []
         for r, (text, var) in enumerate(
-                [("Ch 4 output volume (ml):", self.ch4_var),
+                [(f"Rotation (\u00b0, {ARM_MIN_DEG}-{ARM_MAX_DEG}):",
+                  self.rotation),
+                 ("Ch 4 output volume (ml):", self.ch4_var),
                  ("Mixing pause (s):", self.mix_var)]):
             ttk.Label(consts, text=text).grid(row=r, column=0, sticky="w")
             e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
             e.grid(row=r, column=1, padx=(6, 0), pady=(0, 2))
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
             entries.append(e)
-        self.ch4_entry, self.mix_entry = entries
+        self.rotation_entry, self.ch4_entry, self.mix_entry = entries
 
         right = ttk.Frame(header)
         right.grid(row=0, column=1, sticky="ne")
@@ -518,7 +528,7 @@ class App(tk.Tk):
         self.current_step = 0
         self._refresh_rows()
         self.current_label.configure(text=f"Current: {name}")
-        self.rotation_label.configure(text=f"Rotation: {data['rotation']}°")
+        self.rotation.set(str(data["rotation"]))
 
     def _num_steps(self):
         return len(self.row_buttons)
@@ -539,12 +549,13 @@ class App(tk.Tk):
         return {"type": "out"}
 
     def _update_header(self):
-        """Preset switching only when idle; the preset constants and Save also
-        while a step is just waiting."""
+        """Preset switching and rotation (only applied by Initialize) only when
+        idle; the other preset constants and Save also while a step waits."""
         idle = not self.busy
         editable = idle or self.waiting
         self.preset_box.configure(state="readonly" if idle else "disabled")
         self.ok_btn.configure(state="normal" if idle else "disabled")
+        self.rotation_entry.configure(state="normal" if idle else "disabled")
         for w in (self.save_btn, self.ch4_entry, self.mix_entry):
             w.configure(state="normal" if editable else "disabled")
 
@@ -558,6 +569,10 @@ class App(tk.Tk):
 
     def on_save(self):
         name = self.current_preset.get()
+        degrees = to_degrees(self.rotation.get())
+        if degrees is None:
+            messagebox.showerror("Invalid rotation", self._rotation_error())
+            return
         if not is_number(self.ch4_var.get()):
             messagebox.showerror("Invalid value",
                                  "Ch 4 output volume must be a number.")
@@ -567,6 +582,7 @@ class App(tk.Tk):
                                  "Mixing pause must be a number of seconds "
                                  "(0 or more).")
             return
+        PRESETS[name]["rotation"] = degrees
         PRESETS[name]["ch4_volume"] = self.ch4_var.get().strip()
         PRESETS[name]["mix_pause"] = self.mix_var.get().strip()
         PRESETS[name]["rows"] = [self._row_data(i)
@@ -591,18 +607,9 @@ class App(tk.Tk):
         await asyncio.to_thread(arm_sequence)
 
     def on_initialize(self):
-        name = self.current_preset.get()
-        try:
-            degrees = int(PRESETS[name]["rotation"])
-        except (KeyError, ValueError):
-            messagebox.showerror("Invalid rotation",
-                                 f"Preset {name} has no valid rotation.")
-            return
-        if not ARM_MIN_DEG <= degrees <= ARM_MAX_DEG:
-            messagebox.showerror(
-                "Invalid rotation",
-                f"Preset {name}: rotation {degrees}° is outside "
-                f"{ARM_MIN_DEG}-{ARM_MAX_DEG}°.")
+        degrees = to_degrees(self.rotation.get())
+        if degrees is None:
+            messagebox.showerror("Invalid rotation", self._rotation_error())
             return
 
         self.init_btn.configure(state="disabled")
@@ -611,6 +618,11 @@ class App(tk.Tk):
         self.status.set("Initializing...")
         self._submit(self._init_hardware(degrees),
                      self._init_done, self._init_failed)
+
+    def _rotation_error(self):
+        return (f"Rotation '{self.rotation.get().strip()}' is not valid.\n"
+                f"It must be a whole number of degrees from {ARM_MIN_DEG} "
+                f"to {ARM_MAX_DEG} (e.g. 30 or 30.0).")
 
     def _init_failed(self, exc):
         self._set_busy(False)

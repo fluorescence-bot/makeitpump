@@ -36,13 +36,10 @@ async def main():
                 (0.0, 0.0, 0, 0.003)]
 
     input("Press Return to start the dilution (Ctrl+C to abort)...")
-    
-    while is_finished == False and step_counter != len(sequence):
+
+    while is_finished == False and step_counter < len(sequence):
         result = await controller.run_step(sequence[step_counter])
-        
-        if step_counter < len(sequence):
-            step_counter += 1
-        
+        step_counter += 1
         print(f"Step {step_counter} completed.")
         
         input("Press Return for the next step...")

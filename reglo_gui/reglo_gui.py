@@ -1,6 +1,7 @@
-"""Reglo ICC pump control - GUI frontend only (pump calls are stubs)."""
+"""Reglo ICC pump control GUI, using DilutionController (same as the mock script)."""
 
-import queue
+import asyncio
+import logging
 import threading
 import time
 import tkinter as tk
@@ -8,12 +9,27 @@ from tkinter import ttk, messagebox
 
 import serial  # pip install pyserial
 
+from dilution_controller import DilutionController
+
+DEBUGGING = True
+
+if DEBUGGING:
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger('ismatec').setLevel(logging.DEBUG)
+    from ismatec.mock import Pump
+else:
+    from ismatec import Pump
+
 # ---- Configuration ---------------------------------------------------------
-COLUMN_HEADERS = ["1", "2", "3", "4"]   # rename later (e.g. "Volume", "Time"...)
+COLUMN_HEADERS = ["1", "2", "3", "4"]   # one value per pump channel
 NUM_ROWS = 20
 
+# ---- Pump configuration ------------------------------------------------------
+# Use COMx on Windows. NOTE: must be a different port than the Arduino arm.
+PUMP_ADDRESS = "/dev/ttyACM0"
+
 # ---- Arduino arm configuration ----------------------------------------------
-SERIAL_PORT = "/dev/ttyACM0"
+SERIAL_PORT = "/dev/ttyACM1"
 SERIAL_BAUD = 9600        # must match Serial.begin(...) in the Arduino sketch
 ARM_BOOT_DELAY = 2.0      # Uno resets when the port opens; wait for it to boot
 ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
@@ -21,19 +37,10 @@ ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
                           # None = any non-empty line counts as "done".
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 PRESETS = {                              # stub data; replace with file/db later
-    "preset1": {"rotation": 45, "rows": [["5", "0.1", "0", "0"]]},
-    "preset2": {"rotation": 20, "rows": [["2", "0.5", "0", "0"],
-                                         ["1", "0.2", "0", "0"]]},
+    "preset1": {"rotation": 45, "rows": [["0.001", "0.002", "0", "0"]]},
+    "preset2": {"rotation": 20, "rows": [["0.002", "0.005", "0", "0"],
+                                         ["0.001", "0.002", "0", "0"]]},
 }
-
-
-# ---- Pump hooks (fill in with the Reglo ICC python API later) ---------------
-class PumpStub:
-    def initialize(self):
-        print("[pump] enable + reset volume, time, etc.")
-
-    def run_step(self, step_index, values):
-        print(f"[pump] run step #{step_index + 1}: {values}")
 
 
 class ArmError(Exception):
@@ -102,28 +109,53 @@ class App(tk.Tk):
         super().__init__()
         self.title("Reglo ICC Pump Control")
         self.minsize(720, 560)
-        self.pump = PumpStub()
+
+        # Pump side: DilutionController is async, so it lives on its own
+        # asyncio event loop running in a background thread. The Pump and
+        # controller are created inside that loop (see _init_hardware).
+        self.pump = None
+        self.controller = None
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.loop.run_forever, daemon=True).start()
+
         self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
                                  ARM_DONE_REPLY, ARM_TIMEOUT)
-        self.arm_queue = queue.Queue()   # worker thread -> GUI thread
         self.protocol("WM_DELETE_WINDOW", self.on_exit)
 
         self.current_preset = tk.StringVar(value="preset1")
         self.chosen_preset = tk.StringVar(value="preset1")
         self.rotation = tk.StringVar(value="45")
+        self.status = tk.StringVar(value="Not initialized")
         self.current_step = 0   # row that will run next; rows above are done
         self.pumping = False
         self.initialized = False
         self.duplicate_next = tk.BooleanVar(value=False)
-        self.header_widgets = []  # disabled while pumping
         self.cells = []        # cells[row][col] -> Entry
-        self.row_buttons = []  # row label buttons (#1, #2, ...)
+        self.row_buttons = []  # row labels (#1, #2, ...)
 
         self._build_header()
         self._build_steps()
         self._build_footer()
         self._load_preset("preset1")
         self._refresh_rows()
+
+    # ---- async bridge ------------------------------------------------------
+    def _submit(self, coro, on_ok, on_err):
+        """Run a coroutine on the asyncio thread; call on_ok(result) or
+        on_err(exception) back on the GUI thread when it finishes."""
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        self._poll_future(fut, on_ok, on_err)
+
+    def _poll_future(self, fut, on_ok, on_err):
+        if not fut.done():
+            self.after(100, self._poll_future, fut, on_ok, on_err)
+            return
+        try:
+            result = fut.result()
+        except Exception as exc:
+            on_err(exc)
+        else:
+            on_ok(result)
 
     # ---- layout ------------------------------------------------------------
     def _build_header(self):
@@ -163,7 +195,6 @@ class App(tk.Tk):
                   font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0,
                                                           sticky="w", pady=(0, 4))
 
-        # Scrollable table
         table_frame = ttk.Frame(body, relief="sunken", borderwidth=1)
         table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
@@ -186,7 +217,6 @@ class App(tk.Tk):
             "<Configure>", lambda e: self.canvas.itemconfigure(win, width=e.width))
         self._bind_mousewheel()
 
-        # header row
         ttk.Label(self.grid_frame, text="").grid(row=0, column=0)
         for c, name in enumerate(COLUMN_HEADERS):
             ttk.Label(self.grid_frame, text=name, anchor="center",
@@ -194,7 +224,6 @@ class App(tk.Tk):
                 row=0, column=c + 1, sticky="ew", padx=1, pady=1)
             self.grid_frame.columnconfigure(c + 1, weight=1, uniform="col")
 
-        # body rows
         for r in range(NUM_ROWS):
             lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6,
                             anchor="w")
@@ -213,7 +242,6 @@ class App(tk.Tk):
                 row_entries.append(e)
             self.cells.append(row_entries)
 
-        # Side buttons (Initialize / Run cur. step)
         side = ttk.Frame(body, padding=(12, 0, 0, 0))
         side.grid(row=1, column=1, sticky="n")
         self.init_btn = ttk.Button(side, text="Initialize", width=16,
@@ -229,6 +257,7 @@ class App(tk.Tk):
     def _build_footer(self):
         footer = ttk.Frame(self, padding=10)
         footer.pack(fill="x")
+        ttk.Label(footer, textvariable=self.status).pack(side="left")
         ttk.Button(footer, text="Exit", width=14,
                    command=self.on_exit).pack(side="right")
 
@@ -269,15 +298,12 @@ class App(tk.Tk):
                 e.insert(0, "0.0")
 
     def _normalize_if_left(self, index):
-        """When focus leaves a row that has any value, fill its blanks with 0.0."""
         if self.focus_get() in self.cells[index]:
             return
         if not self._step_is_empty(index):
             self._fill_blanks(index)
 
     def _update_run_state(self):
-        """Run is available when initialized, idle, and the next step row
-        (the one after the steps already done) has values."""
         if not hasattr(self, "run_btn"):
             return
         ok = (self.initialized and not self.pumping
@@ -310,12 +336,12 @@ class App(tk.Tk):
         for w in (self.ok_btn, self.save_btn):
             w.configure(state="normal" if enabled else "disabled")
 
-    # ---- callbacks (stubs) ---------------------------------------------------
+    # ---- callbacks ---------------------------------------------------------
     def on_choose_preset(self):
         self._load_preset(self.chosen_preset.get())
-        # New preset starts from step 1 and needs a fresh init.
         self.initialized = False
         self.init_btn.configure(state="normal")
+        self.status.set("Not initialized")
         self._update_run_state()
 
     def on_save(self):
@@ -325,6 +351,21 @@ class App(tk.Tk):
                                  if any(x.strip() for x in v)]
         print(f"[gui] saved changes to {name}")
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
+
+    # -- initialize: pump setup + arm HOME/rotate, all on the asyncio thread --
+    async def _init_hardware(self, degrees):
+        if self.controller is None:
+            # Create inside the running loop (the mock grabs the current loop).
+            self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+            self.controller = DilutionController(self.pump)
+        await self.controller.setup()
+
+        # Arm code is blocking serial I/O, so run it in a thread.
+        def arm_sequence():
+            self.arm.connect()
+            self.arm.home()
+            self.arm.rotate(degrees)
+        await asyncio.to_thread(arm_sequence)
 
     def on_initialize(self):
         name = self.current_preset.get()
@@ -345,59 +386,46 @@ class App(tk.Tk):
         self.initialized = False
         self._update_run_state()
         self._set_header_enabled(False)
-        self.pump.initialize()
-        # Arm: HOME, then rotate, in a worker thread so the GUI stays alive.
-        threading.Thread(target=self._arm_worker, args=(degrees,),
-                         daemon=True).start()
-        self.after(100, self._poll_arm)
+        self.status.set("Initializing...")
+        self._submit(self._init_hardware(degrees),
+                     self._init_done, self._init_failed)
 
-    def _arm_worker(self, degrees):
-        try:
-            self.arm.connect()
-            self.arm.home()
-            self.arm.rotate(degrees)
-            self.arm_queue.put(("ok", None))
-        except ArmError as exc:
-            self.arm_queue.put(("error", str(exc)))
-
-    def _poll_arm(self):
-        try:
-            kind, msg = self.arm_queue.get_nowait()
-        except queue.Empty:
-            self.after(100, self._poll_arm)
-            return
-        if kind == "ok":
-            self._init_done()
-        else:
-            self._init_failed(msg)
-
-    def _init_failed(self, msg):
+    def _init_failed(self, exc):
         self._set_header_enabled(True)
         self.init_btn.configure(state="normal")
-        messagebox.showerror("Arm initialization failed", msg)
+        self.status.set("Initialization failed")
+        messagebox.showerror("Initialization failed", str(exc))
 
-    def _init_done(self):
-        # Init finished: Initialize stays inactive, Run becomes active.
+    def _init_done(self, _result):
         self._set_header_enabled(True)
         self.current_step = 0
         self.initialized = True
+        self.status.set("Ready")
         self._refresh_rows()
         self._update_run_state()
 
+    # -- run one step through DilutionController ------------------------------
     def on_run_step(self):
         if self._step_is_empty(self.current_step):
             messagebox.showwarning("Empty step",
                                    f"Step #{self.current_step + 1} has no values.")
             return
         self._fill_blanks(self.current_step)           # empty fields -> 0.0
+        try:
+            step = tuple(float(v) for v in self._row_values(self.current_step))
+        except ValueError:
+            messagebox.showerror("Invalid value",
+                                 f"Step #{self.current_step + 1} contains a "
+                                 "value that is not a number.")
+            return
         self._duplicate_into_next_row()
         self._set_header_enabled(False)
         self.pumping = True
-        self._update_run_state()                      # inactive while pumping
+        self.status.set(f"Pumping step #{self.current_step + 1}...")
+        self._update_run_state()
         self._refresh_rows()
-        self.pump.run_step(self.current_step, self._row_values(self.current_step))
-        # Simulate pumping; replace with real completion callback.
-        self.after(2000, self._pumping_done)
+        self._submit(self.controller.run_step(step),
+                     self._pumping_done, self._pumping_failed)
 
     def _duplicate_into_next_row(self):
         """If ticked and the next row is empty, copy the current row into it."""
@@ -410,7 +438,17 @@ class App(tk.Tk):
             entry.delete(0, "end")
             entry.insert(0, value)
 
-    def _pumping_done(self):
+    def _pumping_failed(self, exc):
+        self.pumping = False
+        self._set_header_enabled(True)
+        self.status.set("Pump error")
+        self._refresh_rows()
+        self._update_run_state()
+        messagebox.showerror("Pump error", str(exc))
+
+    def _pumping_done(self, _result):
+        # run_step returns None, so just report the step number
+        self.status.set(f"Step #{self.current_step + 1} done")
         self.pumping = False
         self.current_step += 1              # lock finished row, advance
         self._set_header_enabled(True)
@@ -418,13 +456,12 @@ class App(tk.Tk):
                   or self._step_is_empty(self.current_step))
         self._refresh_rows()
         if at_end:
-            # Nothing queued: allow a new init. Editing the next row later
-            # makes it runnable again (see _update_run_state).
             self.init_btn.configure(state="normal")
         self._update_run_state()
 
     def on_exit(self):
         self.arm.close()
+        self.loop.call_soon_threadsafe(self.loop.stop)
         self.destroy()
 
 

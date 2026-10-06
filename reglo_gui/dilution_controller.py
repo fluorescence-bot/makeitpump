@@ -1,6 +1,7 @@
 # Class for use with ismatec library (git@github.com:alexrudd2/ismatec.git)
 
-from ismatec import Pump
+from ismatec import Pump as RealPump
+from ismatec.mock import Pump as MockPump
 from ismatec.util import Mode, Rotation, Setpoint, Tubing
 import asyncio
 import time
@@ -9,7 +10,7 @@ import time
 class DilutionController:
     """Middle layer: turns a sequence into pump commands, one step at a time."""
 
-    def __init__(self, pump_api : Pump):
+    def __init__(self, pump_api : RealPump | MockPump):
         self.pump = pump_api
         self._run = None
 

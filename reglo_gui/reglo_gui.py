@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import threading
 import time
 import tkinter as tk
@@ -41,6 +42,19 @@ PRESETS = {                              # stub data; replace with file/db later
     "preset2": {"rotation": 20, "rows": [["0.002", "0.005", "0", "0"],
                                          ["0.001", "0.002", "0", "0"]]},
 }
+
+
+_NUMBER = re.compile(r"^[+-]?(\d+([.,]\d*)?|[.,]\d+)$")
+
+
+def is_number(text):
+    """True for plain numbers like '3', '0.001' or '0,001' (never raises)."""
+    return bool(_NUMBER.match(text.strip()))
+
+
+def to_float(text):
+    """Parse a number, accepting both '0.001' and '0,001'."""
+    return float(text.strip().replace(",", "."))
 
 
 class ArmError(Exception):
@@ -254,6 +268,8 @@ class App(tk.Tk):
                 var.trace_add("write", lambda *_: self._update_run_state())
                 e = tk.Entry(self.grid_frame, justify="center", width=10,
                              relief="solid", borderwidth=1, textvariable=var)
+                e.var = var   # keep a reference, or Tk drops the trace
+                e.bind("<KeyRelease>", lambda ev: self._update_run_state())
                 e.bind("<FocusOut>", lambda ev, i=r: self.after_idle(
                     self._normalize_if_left, i))
                 e.grid(row=r + 1, column=c + 1, sticky="ew", padx=1, pady=1,
@@ -327,8 +343,15 @@ class App(tk.Tk):
             return
         ok = (self.initialized and not self.pumping
               and self.current_step < NUM_ROWS
-              and not self._step_is_empty(self.current_step))
+              and self._row_is_complete(self.current_step))
         self.run_btn.configure(state="normal" if ok else "disabled")
+
+    def _row_is_complete(self, index):
+        """True when every channel field in the row holds a valid number."""
+        for v in self._row_values(index):
+            if not is_number(v):
+                return False
+        return True
 
     def _step_is_empty(self, index):
         return not any(v.strip() for v in self._row_values(index))
@@ -431,7 +454,7 @@ class App(tk.Tk):
             return
         self._fill_blanks(self.current_step)           # empty fields -> 0.0
         try:
-            step = tuple(float(v) for v in self._row_values(self.current_step))
+            step = tuple(to_float(v) for v in self._row_values(self.current_step))
         except ValueError:
             messagebox.showerror("Invalid value",
                                  f"Step #{self.current_step + 1} contains a "

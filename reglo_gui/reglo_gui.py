@@ -6,17 +6,19 @@ import math
 import re
 import sqlite3
 import threading
+import tempfile
 import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from tkinter import font as tkfont
 
 import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
 from data_store import DataStore
+import session_log
 
 DEBUGGING = True
 
@@ -247,6 +249,7 @@ class App(tk.Tk):
         self._saved_steps = 0
         self._init_rotation = None   # rotation the arm was initialized to
         self._step_log = None        # log entry of the step that is running
+        self._export_dir = None      # folder of the last CSV export
         self.duplicate_next = tk.BooleanVar(value=False)
         self.cells = []        # cells[row][col] -> Entry (channels 1-3)
         self.wait_cells = []   # wait_cells[row] -> Entry (seconds)
@@ -385,6 +388,13 @@ class App(tk.Tk):
                indicatorforeground=[("selected", "white")])
         st.configure("Vertical.TScrollbar", background=NA_BG, troughcolor=CARD,
                      bordercolor=CARD, arrowcolor=MUTED, relief="flat")
+        st.configure("Treeview", background=CARD, fieldbackground=CARD,
+                     foreground=TEXT, rowheight=26, borderwidth=1)
+        st.map("Treeview", background=[("selected", ACCENT)],
+               foreground=[("selected", "white")])
+        st.configure("Treeview.Heading", background=BUTTON_BG, foreground=MUTED,
+                     font=self.font_small_bold, relief="flat", padding=(6, 4))
+        st.map("Treeview.Heading", background=[("active", HOVER_BG)])
 
     def _card(self, parent, **pack):
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -641,6 +651,8 @@ class App(tk.Tk):
                   style="Status.TLabel").pack(side="left")
         ttk.Button(footer, text="Exit", width=10,
                    command=self.on_exit).pack(side="right")
+        ttk.Button(footer, text="Log explorer\u2026",
+                   command=self.on_log_explorer).pack(side="right", padx=(0, 8))
         self.status.trace_add("write", lambda *_: self._update_status_dot())
 
     def _update_status_dot(self):
@@ -1090,7 +1102,8 @@ class App(tk.Tk):
             return
         self._duplicate_into_next_row()
         amounts = list(step) if kind != "wait" else [0.0] * 4
-        self._step_log = {"timestamp": now_iso(), "type": kind, "ch": amounts}
+        self._step_log = {"timestamp": now_iso(), "type": kind, "ch": amounts,
+                          "wait": seconds if kind == "wait" else None}
 
         if kind == "wait":
             self._start_wait(f"Step #{n}: waiting...", seconds)
@@ -1276,6 +1289,130 @@ class App(tk.Tk):
         self.status.set("New session started")
         self._refresh_rows()
         self._update_run_state()
+
+    # -- log explorer: browse saved sessions, open or export them -------------
+    def on_log_explorer(self):
+        """Dialog listing the saved sessions. Open shows a session's log in
+        the system's text editor; Export to CSV saves it where the user picks
+        in a save dialog."""
+        try:
+            sessions = self.store.list_sessions()
+        except sqlite3.Error as exc:
+            messagebox.showerror("Log explorer",
+                                 f"Could not read the sessions:\n{exc}")
+            return
+        dlg = tk.Toplevel(self, background=BG)
+        dlg.title("Log explorer")
+        dlg.transient(self)
+        dlg.minsize(420, 320)
+        card = ttk.Frame(dlg, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(2, weight=1)
+        ttk.Label(card, text="Saved sessions", style="Heading.Card.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(card, text="Newest first. Unsaved sessions are not listed.",
+                  style="Muted.Card.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        tree = ttk.Treeview(card, columns=("name",), show="headings",
+                            selectmode="browse", height=12)
+        tree.heading("name", text="Session", anchor="w")
+        tree.column("name", anchor="w", width=360)
+        scroll = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=2, column=0, sticky="nsew")
+        scroll.grid(row=2, column=1, sticky="ns")
+        for sid, started_at, preset in sessions:
+            name = session_log.session_name(
+                {"started_at": started_at, "preset_name": preset})
+            tree.insert("", "end", iid=str(sid), values=(name,))
+        if not sessions:
+            tree.insert("", "end", iid="none", values=("No saved sessions",),
+                        tags=("empty",))
+            tree.tag_configure("empty", foreground=MUTED)
+
+        buttons = ttk.Frame(card, style="Plain.Card.TFrame")
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Button(buttons, text="Close", command=dlg.destroy).pack(side="right")
+        export_btn = ttk.Button(buttons, text="Export to CSV\u2026",
+                                state="disabled")
+        export_btn.pack(side="right", padx=(0, 8))
+        open_btn = ttk.Button(buttons, text="Open", style="Accent.TButton",
+                              state="disabled")
+        open_btn.pack(side="left")
+
+        def selected():
+            sel = [i for i in tree.selection() if i != "none"]
+            if not sel:
+                return None
+            try:
+                return self.store.load_session(int(sel[0]))
+            except sqlite3.Error as exc:
+                messagebox.showerror("Log explorer",
+                                     f"Could not read the session:\n{exc}",
+                                     parent=dlg)
+                return None
+
+        def on_select(_event=None):
+            ok = any(i != "none" for i in tree.selection())
+            for b in (open_btn, export_btn):
+                b.configure(state="normal" if ok else "disabled")
+
+        def do_open(_event=None):
+            session = selected()
+            if session is None:
+                return
+            folder = Path(tempfile.gettempdir()) / "reglo_logs"
+            path = folder / (session_log.safe_filename(
+                session_log.session_name(session)) + ".txt")
+            try:
+                folder.mkdir(exist_ok=True)
+                path.write_text(session_log.to_text(session), encoding="utf-8")
+                session_log.open_with_system(str(path))
+            except OSError as exc:
+                messagebox.showerror("Open log",
+                                     f"Could not open the log:\n{exc}",
+                                     parent=dlg)
+
+        def do_export():
+            session = selected()
+            if session is None:
+                return
+            name = session_log.safe_filename(session_log.session_name(session))
+            # The save dialog asks before replacing an existing file itself.
+            chosen = filedialog.asksaveasfilename(
+                parent=dlg, title="Export to CSV",
+                initialdir=self._export_dir or Path.cwd(),
+                initialfile=f"{name}.csv", defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*")])
+            if not chosen:
+                return                      # cancelled
+            path = Path(chosen)
+            try:
+                session_log.write_csv(session, path)
+            except OSError as exc:
+                messagebox.showerror("Export to CSV",
+                                     f"Could not export the session:\n{exc}",
+                                     parent=dlg)
+                return
+            self._export_dir = path.parent  # start there next time
+            messagebox.showinfo("Export to CSV",
+                                f"Exported to\n{path}", parent=dlg)
+
+        open_btn.configure(command=do_open)
+        export_btn.configure(command=do_export)
+        tree.bind("<<TreeviewSelect>>", on_select)
+        tree.bind("<Double-1>", do_open)
+        tree.bind("<Return>", do_open)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        if sessions:
+            tree.focus_set()
 
     # -- run all: go through the steps without manual interaction -------------
     def on_run_all(self):

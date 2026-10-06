@@ -15,14 +15,18 @@ A session is:
      "rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
      "measure_pause": "30",          # header: the preset as it was used
      "steps": [{"timestamp": "2026-10-06T14:05:40", "type": "in",
-                "ch": [0.001, 0.002, 0.0, 0.0]}]}   # ml pumped, ch 1-4
+                "ch": [0.001, 0.002, 0.0, 0.0],     # ml pumped, ch 1-4
+                "wait": None}]}                     # seconds, wait steps only
+plus, when loaded from the database, "saved_at" and "step_count" (footer).
 """
 
 import sqlite3
 
-SCHEMA_VERSION = 2   # bump and add a migration step in _migrate() on change
+SCHEMA_VERSION = 3   # bump and add a migration step in _migrate() on change
 
-_SCHEMA_V1 = """
+# Each schema step is a list of single statements (not one string split on
+# ";", which would break on a ";" inside a comment).
+_SCHEMA_V1 = ["""
 CREATE TABLE presets (
     id            INTEGER PRIMARY KEY,
     name          TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -32,7 +36,7 @@ CREATE TABLE presets (
     mix_pause     TEXT NOT NULL,
     measure_pause TEXT NOT NULL,
     updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+)""", """
 CREATE TABLE steps (
     preset_id INTEGER NOT NULL REFERENCES presets(id) ON DELETE CASCADE,
     position  INTEGER NOT NULL,
@@ -42,10 +46,9 @@ CREATE TABLE steps (
     vol3      TEXT,
     seconds   TEXT,                          -- wait
     PRIMARY KEY (preset_id, position)
-);
-"""
+)"""]
 
-_SCHEMA_V2 = """
+_SCHEMA_V2 = ["""
 CREATE TABLE sessions (
     id            INTEGER PRIMARY KEY,
     started_at    TEXT NOT NULL,             -- header: when Initialize ran
@@ -56,7 +59,7 @@ CREATE TABLE sessions (
     measure_pause TEXT NOT NULL,
     saved_at      TEXT NOT NULL,             -- footer: last save
     step_count    INTEGER NOT NULL           -- footer: steps at last save
-);
+)""", """
 CREATE TABLE session_steps (
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     position   INTEGER NOT NULL,
@@ -67,8 +70,12 @@ CREATE TABLE session_steps (
     ch3        REAL NOT NULL,
     ch4        REAL NOT NULL,
     PRIMARY KEY (session_id, position)
-);
-"""
+)"""]
+
+# wait: seconds of a wait step, NULL otherwise. (No SQL comment here: SQLite
+# copies ADD COLUMN text into the table definition, where a "--" comment
+# would swallow the closing parenthesis.)
+_SCHEMA_V3 = ["ALTER TABLE session_steps ADD COLUMN wait REAL"]
 
 
 class DataStore:
@@ -83,12 +90,12 @@ class DataStore:
             raise sqlite3.DatabaseError(
                 f"Database schema version {version} is newer than this "
                 f"program supports ({SCHEMA_VERSION}).")
-        for target, schema in ((1, _SCHEMA_V1), (2, _SCHEMA_V2)):
+        for target, statements in ((1, _SCHEMA_V1), (2, _SCHEMA_V2),
+                                   (3, _SCHEMA_V3)):
             if version < target:
                 with self.conn:
-                    for statement in schema.split(";"):
-                        if statement.strip():
-                            self.conn.execute(statement)
+                    for statement in statements:
+                        self.conn.execute(statement)
                     self.conn.execute(f"PRAGMA user_version = {target}")
 
     def close(self):
@@ -168,10 +175,38 @@ class DataStore:
                     "DELETE FROM session_steps WHERE session_id = ?", (sid,))
             self.conn.executemany(
                 "INSERT INTO session_steps (session_id, position, timestamp, "
-                "type, ch1, ch2, ch3, ch4) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [(sid, i, step["timestamp"], step["type"], *step["ch"])
+                "type, ch1, ch2, ch3, ch4, wait) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(sid, i, step["timestamp"], step["type"], *step["ch"],
+                  step.get("wait"))
                  for i, step in enumerate(session["steps"])])
         return sid
+
+    def list_sessions(self):
+        """Saved sessions, newest first: [(id, started_at, preset_name)]."""
+        return self.conn.execute(
+            "SELECT id, started_at, preset_name FROM sessions "
+            "ORDER BY started_at DESC, id DESC").fetchall()
+
+    def load_session(self, sid):
+        """One saved session with its steps (see the module docstring)."""
+        row = self.conn.execute(
+            "SELECT started_at, preset_name, rotation, ch4_volume, mix_pause, "
+            "measure_pause, saved_at, step_count FROM sessions WHERE id = ?",
+            (sid,)).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError(f"No session with id {sid}.")
+        keys = ("started_at", "preset_name", "rotation", "ch4_volume",
+                "mix_pause", "measure_pause", "saved_at", "step_count")
+        session = {"id": sid, **dict(zip(keys, row))}
+        session["steps"] = [
+            {"timestamp": ts, "type": kind, "ch": [c1, c2, c3, c4],
+             "wait": wait}
+            for ts, kind, c1, c2, c3, c4, wait in self.conn.execute(
+                "SELECT timestamp, type, ch1, ch2, ch3, ch4, wait "
+                "FROM session_steps WHERE session_id = ? ORDER BY position",
+                (sid,))]
+        return session
 
     # -- helpers (call inside a transaction) ---------------------------------
     def _insert(self, name, preset):

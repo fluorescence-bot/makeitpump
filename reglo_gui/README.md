@@ -73,9 +73,10 @@ The rotator arm's serial protocol is described in
 ## Sessions
 
 A session runs from **Initialize** until you start a new session or exit.
-It logs every step that finishes: when the step started, its type, and how
-many ml were pumped on each of channels 1–4. A Wait step logs 0 ml on every
-channel. A step that fails with a pump error is not logged.
+It logs every step that finishes: when the step started, its type, how many
+ml were pumped on each of channels 1–4, and for a Wait step how many seconds
+it waited. A Wait step logs 0 ml on every channel. A step that fails with a
+pump error is not logged.
 
 The log is kept in memory and only written to the database when you save it:
 
@@ -91,6 +92,24 @@ The log is kept in memory and only written to the database when you save it:
 Each saved session has a header (when it started, and the preset's name and
 settings as they were used) and a footer (when it was last saved and how
 many steps it had then).
+
+### Log explorer
+
+**Log explorer…** (next to Exit) lists the saved sessions, newest first. Each
+is named `<start date and time>-<preset name>`, for example
+`2026-10-06_14-03-12-preset1`. Select a session to:
+
+- **Open** it (or double-click it): shows the log as text, with the header,
+  one line per step and the footer, in the system's default text editor.
+- **Export to CSV…**: opens a save dialog with `<session name>.csv` as the
+  suggested file name. The first export starts in the folder the program was
+  started from, later ones in the folder you last exported to. After saving,
+  it shows where the file went. The columns are `step#`, `type`, `ch1` to
+  `ch4` (ml) and `wait` (seconds). Fields that don't apply to a step's
+  type are `n/a`: a Pump in step uses ch1–ch3, a Pump out step ch4, and a
+  Wait step only `wait`.
+
+Wait steps saved before the wait time was logged show `n/a` as their wait.
 
 ## Database
 
@@ -109,7 +128,7 @@ The database has these tables:
 | `presets` | One row per preset with its settings. |
 | `steps` | The steps of each preset, in order. |
 | `sessions` | One row per saved session: the header and footer. |
-| `session_steps` | The logged steps of each session: time, type, and ml on ch 1–4. |
+| `session_steps` | The logged steps of each session: time, type, ml on ch 1–4, and seconds waited. |
 
 Preset values are stored as the text that was typed, so they load back
 exactly as entered.
@@ -119,6 +138,7 @@ exactly as entered.
 - `reglo_gui.py`: the GUI, the arm controller and the default presets.
 - `data_store.py`: reads and writes presets and sessions in the SQLite
   database.
+- `session_log.py`: turns a saved session into a CSV file or a text log.
 - `dilution_controller.py`: turns a step into pump commands for the
   `ismatec` library.
 - `mock_gui.py`: an old command-line test script. It is out of date and no
@@ -136,8 +156,9 @@ exactly as entered.
 - [x] **Log each step of a session.**
   - [x] Store the logs in SQLite.
 - [ ] **Restore a saved session.**
-- [ ] **Log explorer**: a button for browsing past logs.
-  - [ ] Export logs to XLS or CSV.
+- [x] **Log explorer**: a button for browsing past logs.
+  - [x] Export logs to CSV.
+  - [ ] Export logs to XLS.
 - [ ] **Take tube size into account.**
 - [ ] **Show progress while pumping**, using the pump's `^U` event messages.
 - [ ] **Program options**, saved in SQLite: for example time as min:sec or

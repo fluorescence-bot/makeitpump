@@ -79,6 +79,8 @@ ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 DB_PATH = Path(__file__).with_name("data.db")
 OLD_DB_PATH = Path(__file__).with_name("presets.db")   # name before sessions
 PRESETS = {}
+EMPTY_PRESET = {"rotation": 0, "ch4_volume": "0", "mix_pause": "0",
+                "measure_pause": "30", "rows": []}
 DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
                 "measure_pause": "30",
@@ -382,6 +384,10 @@ class App(tk.Tk):
                lightcolor=[("focus", ACCENT)])
         self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
 
+        st.configure("Card.TRadiobutton", background=CARD)
+        st.map("Card.TRadiobutton", background=[("active", CARD)],
+               indicatorbackground=[("selected", ACCENT)],
+               indicatorforeground=[("selected", "white")])
         st.configure("Card.TCheckbutton", background=CARD)
         st.map("Card.TCheckbutton", background=[("active", CARD)],
                indicatorbackground=[("selected", ACCENT)],
@@ -462,9 +468,14 @@ class App(tk.Tk):
         self.ok_btn = ttk.Button(pick, text="OK", command=self.on_choose_preset)
         self.ok_btn.pack(side="left", padx=(6, 0))
 
-        self.save_btn = ttk.Button(header, text="Save changes",
+        actions = ttk.Frame(header, style="Plain.Card.TFrame")
+        actions.grid(row=1, column=1, sticky="se")
+        self.new_preset_btn = ttk.Button(actions, text="New preset\u2026",
+                                         command=self.on_new_preset)
+        self.new_preset_btn.pack(side="left", padx=(0, 8))
+        self.save_btn = ttk.Button(actions, text="Save changes",
                                    command=self.on_save)
-        self.save_btn.grid(row=1, column=1, sticky="se")
+        self.save_btn.pack(side="left")
 
     def _build_steps(self):
         body = ttk.Frame(self)
@@ -828,6 +839,7 @@ class App(tk.Tk):
         self.preset_box.configure(state="readonly" if idle else "disabled")
         self.ok_btn.configure(state="normal" if idle else "disabled")
         self.rename_btn.configure(state="normal" if idle else "disabled")
+        self.new_preset_btn.configure(state="normal" if idle else "disabled")
         self.save_btn.configure(state="normal" if editable else "disabled")
         self._refresh_consts()
 
@@ -890,7 +902,8 @@ class App(tk.Tk):
         self._update_run_state()
 
     def _preset_name_error(self, new, old):
-        """Why `new` can't be the new name of preset `old`, or None if it can."""
+        """Why `new` can't be the name of preset `old` (None for a new
+        preset), or None if it can."""
         if not new:
             return "The name can't be empty."
         if len(new) > PRESET_NAME_MAX:
@@ -902,19 +915,36 @@ class App(tk.Tk):
         return None
 
     def _ask_preset_name(self, old):
-        """Themed modal dialog. Returns the new name, or None if cancelled.
-        Invalid names show an error in the dialog, which stays open."""
+        """Rename dialog. Returns the new name, or None if cancelled."""
+        result = self._preset_name_dialog("Rename preset", "Rename", old, old)
+        return None if result is None else result[0]
+
+    def _preset_name_dialog(self, title, action, initial, old, choices=None,
+                            suggestions=None):
+        """Themed modal dialog asking for a preset name. `old` is the preset
+        being renamed (None for a new one). `choices` is an optional list of
+        (key, label) radio buttons; `suggestions` maps a choice to the name
+        to suggest while the user hasn't typed one. Returns (name, choice),
+        or None if cancelled. Invalid names show an error in the dialog,
+        which stays open."""
         dlg = tk.Toplevel(self, background=BG)
-        dlg.title("Rename preset")
+        dlg.title(title)
         dlg.transient(self)
         dlg.resizable(False, False)
         card = ttk.Frame(dlg, style="Card.TFrame", padding=16)
         card.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Label(card, text="Rename preset", style="Heading.Card.TLabel").pack(
+        ttk.Label(card, text=title, style="Heading.Card.TLabel").pack(
             anchor="w")
-        ttk.Label(card, text="New name", style="Muted.Card.TLabel").pack(
-            anchor="w", pady=(10, 2))
-        var = tk.StringVar(value=old)
+        choice = tk.StringVar(value=choices[0][0] if choices else "")
+        if choices:
+            ttk.Label(card, text="Start from", style="Muted.Card.TLabel").pack(
+                anchor="w", pady=(10, 2))
+            for key, label in choices:
+                ttk.Radiobutton(card, text=label, value=key, variable=choice,
+                                style="Card.TRadiobutton").pack(anchor="w")
+        ttk.Label(card, text="Name" if old is None else "New name",
+                  style="Muted.Card.TLabel").pack(anchor="w", pady=(10, 2))
+        var = tk.StringVar(value=initial)
         entry = ttk.Entry(card, textvariable=var, width=32)
         entry.pack(fill="x")
         error = ttk.Label(card, text="", style="Card.TLabel",
@@ -922,19 +952,27 @@ class App(tk.Tk):
         error.pack(anchor="w", pady=(4, 0))
         buttons = ttk.Frame(card, style="Plain.Card.TFrame")
         buttons.pack(fill="x", pady=(10, 0))
-        result = {"name": None}
+        result = {"value": None}
+
+        def on_choice(*_):
+            # follow the suggestion as long as the name hasn't been edited
+            if suggestions and var.get() in suggestions.values():
+                var.set(suggestions[choice.get()])
+                entry.select_range(0, "end")
+        choice.trace_add("write", on_choice)
 
         def ok(_event=None):
             new = var.get().strip()
-            message = None if new == old else self._preset_name_error(new, old)
+            message = (None if old is not None and new == old
+                       else self._preset_name_error(new, old))
             if message:
                 error.configure(text=message)
                 entry.focus_set()
                 return
-            result["name"] = new
+            result["value"] = (new, choice.get())
             dlg.destroy()
 
-        ttk.Button(buttons, text="Rename", style="Accent.TButton",
+        ttk.Button(buttons, text=action, style="Accent.TButton",
                    command=ok).pack(side="right")
         ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(
             side="right", padx=(0, 8))
@@ -952,7 +990,7 @@ class App(tk.Tk):
         entry.focus_set()
         entry.select_range(0, "end")
         self.wait_window(dlg)
-        return result["name"]
+        return result["value"]
 
     def on_rename_preset(self):
         old = self.current_preset.get()
@@ -976,33 +1014,81 @@ class App(tk.Tk):
         self.current_label.configure(text=new)
         print(f"[gui] renamed preset {old} -> {new}")
 
-    def on_save(self):
-        name = self.current_preset.get()
+    def _unused_name(self, base):
+        """`base`, or `base 2`, `base 3`, ... if that name is taken."""
+        name, n = base[:PRESET_NAME_MAX], 2
+        while self._preset_name_error(name, None):
+            suffix = f" {n}"
+            name = base[:PRESET_NAME_MAX - len(suffix)] + suffix
+            n += 1
+        return name
+
+    def on_new_preset(self):
+        """Create a preset from a copy of the current one (as shown, with
+        unsaved edits) or an empty one, save it and open it."""
+        current = self.current_preset.get()
+        suggestions = {"copy": self._unused_name(f"{current} copy"),
+                       "empty": self._unused_name("New preset")}
+        answer = self._preset_name_dialog(
+            "New preset", "Create", suggestions["copy"], None,
+            choices=[("copy", f"A copy of '{current}'"),
+                     ("empty", "An empty preset")],
+            suggestions=suggestions)
+        if answer is None:
+            return                          # cancelled
+        name, start = answer
+        if start == "copy":
+            preset = self._preset_from_form()
+            if preset is None:
+                return                      # invalid value, already shown
+        else:
+            preset = {**EMPTY_PRESET, "rows": []}
+        try:
+            self.store.save(name, preset)
+        except sqlite3.Error as exc:
+            messagebox.showerror("New preset",
+                                 f"Could not create the preset:\n{exc}")
+            return
+        PRESETS[name] = preset
+        self.preset_box.configure(values=list(PRESETS))
+        self.chosen_preset.set(name)
+        self.on_choose_preset()
+        print(f"[gui] created preset {name} ({start})")
+
+    def _preset_from_form(self):
+        """The preset as shown in the window, or None (after showing an
+        error) if a setting isn't valid."""
         degrees = to_degrees(self.rotation.get())
         if degrees is None:
             messagebox.showerror("Invalid rotation", self._rotation_error())
-            return
+            return None
         if not is_number(self.ch4_var.get()):
             messagebox.showerror("Invalid value",
                                  "Ch 4 output volume must be a number.")
-            return
+            return None
         if not is_duration(self.mix_var.get()):
             messagebox.showerror("Invalid value",
                                  "Mixing pause must be a number of seconds "
                                  "(0 or more).")
-            return
+            return None
         if not is_duration(self.measure_var.get()):
             messagebox.showerror("Invalid value",
                                  "Measurement pause must be a number of "
                                  "seconds (0 or more).")
-            return
-        preset = {
+            return None
+        return {
             "rotation": degrees,
             "ch4_volume": self.ch4_var.get().strip(),
             "mix_pause": self.mix_var.get().strip(),
             "measure_pause": self.measure_var.get().strip(),
             "rows": [self._row_data(i) for i in range(self._num_steps())
                      if not self._step_is_empty(i)]}
+
+    def on_save(self):
+        name = self.current_preset.get()
+        preset = self._preset_from_form()
+        if preset is None:
+            return
         try:
             self.store.save(name, preset)
         except sqlite3.Error as exc:
@@ -1442,6 +1528,10 @@ class App(tk.Tk):
         self.on_run_step()
 
     def on_exit(self):
+        if self.grab_current() is not None:
+            # A modal dialog (e.g. rename) is open and still needs the
+            # database; the window's close button can arrive anyway.
+            return
         if not self._end_session("Exit", "Save the current session before "
                                  "exiting?"):
             return

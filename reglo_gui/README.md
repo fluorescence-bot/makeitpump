@@ -49,6 +49,11 @@ The rotator arm's serial protocol is described in
    Each setting is locked (🔒) to prevent accidental edits. Click the lock to
    edit it, and click ↶ to go back to the saved value. Click ✎ next to the
    preset's name to rename the preset.
+
+   **New preset…** creates a preset, starting from either a copy of the
+   current one (its settings and steps as shown, including unsaved edits)
+   or an empty one. Give it a name and press **Create**: the new preset is
+   saved and opened. The original preset keeps its saved version.
 2. **Edit the steps.** There are three step types:
    - **Pump in**: pumps the volumes (ml) in columns 1–3 on channels 1–3,
      then waits for the mixing pause.

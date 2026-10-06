@@ -104,6 +104,22 @@ class ArmController:
             self.ser = None
 
 
+class ArmMock:
+    """Stand-in for the arm when DEBUGGING: does nothing, needs no hardware."""
+
+    def connect(self):
+        print("[arm mock] connect (skipped)")
+
+    def home(self):
+        print("[arm mock] HOME (skipped)")
+
+    def rotate(self, degrees):
+        print(f"[arm mock] rotate to {degrees} deg (skipped)")
+
+    def close(self):
+        pass
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -118,8 +134,11 @@ class App(tk.Tk):
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
-        self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
-                                 ARM_DONE_REPLY, ARM_TIMEOUT)
+        if DEBUGGING:
+            self.arm = ArmMock()
+        else:
+            self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
+                                     ARM_DONE_REPLY, ARM_TIMEOUT)
         self.protocol("WM_DELETE_WINDOW", self.on_exit)
 
         self.current_preset = tk.StringVar(value="preset1")

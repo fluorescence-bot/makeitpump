@@ -1,4 +1,5 @@
-"""SQLite storage for presets (stdlib sqlite3, no extra dependency).
+"""SQLite storage for presets and session logs (stdlib sqlite3, no extra
+dependency).
 
 A preset is the same dict the GUI uses:
     {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
@@ -7,11 +8,19 @@ A preset is the same dict the GUI uses:
               {"type": "wait", "seconds": "30"},
               {"type": "out"}]}
 Values are stored as the text the user typed, so they load back unchanged.
+
+A session is:
+    {"id": None,                     # set by save_session()
+     "started_at": "2026-10-06T14:03:12", "preset_name": "preset1",
+     "rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
+     "measure_pause": "30",          # header: the preset as it was used
+     "steps": [{"timestamp": "2026-10-06T14:05:40", "type": "in",
+                "ch": [0.001, 0.002, 0.0, 0.0]}]}   # ml pumped, ch 1-4
 """
 
 import sqlite3
 
-SCHEMA_VERSION = 1   # bump and add a migration step in _migrate() on change
+SCHEMA_VERSION = 2   # bump and add a migration step in _migrate() on change
 
 _SCHEMA_V1 = """
 CREATE TABLE presets (
@@ -36,8 +45,33 @@ CREATE TABLE steps (
 );
 """
 
+_SCHEMA_V2 = """
+CREATE TABLE sessions (
+    id            INTEGER PRIMARY KEY,
+    started_at    TEXT NOT NULL,             -- header: when Initialize ran
+    preset_name   TEXT NOT NULL,             -- header: a copy of the preset's
+    rotation      INTEGER NOT NULL,          -- name and settings as used, not
+    ch4_volume    TEXT NOT NULL,             -- a link, so later edits or
+    mix_pause     TEXT NOT NULL,             -- renames don't change the log
+    measure_pause TEXT NOT NULL,
+    saved_at      TEXT NOT NULL,             -- footer: last save
+    step_count    INTEGER NOT NULL           -- footer: steps at last save
+);
+CREATE TABLE session_steps (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    position   INTEGER NOT NULL,
+    timestamp  TEXT NOT NULL,                -- when the step started
+    type       TEXT NOT NULL CHECK (type IN ('in', 'out', 'wait')),
+    ch1        REAL NOT NULL,                -- ml pumped on each channel
+    ch2        REAL NOT NULL,
+    ch3        REAL NOT NULL,
+    ch4        REAL NOT NULL,
+    PRIMARY KEY (session_id, position)
+);
+"""
 
-class PresetStore:
+
+class DataStore:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -49,12 +83,13 @@ class PresetStore:
             raise sqlite3.DatabaseError(
                 f"Database schema version {version} is newer than this "
                 f"program supports ({SCHEMA_VERSION}).")
-        if version < 1:
-            with self.conn:
-                for statement in _SCHEMA_V1.split(";"):
-                    if statement.strip():
-                        self.conn.execute(statement)
-                self.conn.execute("PRAGMA user_version = 1")
+        for target, schema in ((1, _SCHEMA_V1), (2, _SCHEMA_V2)):
+            if version < target:
+                with self.conn:
+                    for statement in schema.split(";"):
+                        if statement.strip():
+                            self.conn.execute(statement)
+                    self.conn.execute(f"PRAGMA user_version = {target}")
 
     def close(self):
         self.conn.close()
@@ -109,6 +144,34 @@ class PresetStore:
                 "WHERE name = ?", (new, old))
             if cur.rowcount != 1:
                 raise sqlite3.DatabaseError(f"No preset called '{old}'.")
+
+    def save_session(self, session, saved_at):
+        """Write the whole session (header, steps, footer) and return its id.
+        Saving again later rewrites the steps and the footer."""
+        with self.conn:
+            if session["id"] is None:
+                cur = self.conn.execute(
+                    "INSERT INTO sessions (started_at, preset_name, rotation, "
+                    "ch4_volume, mix_pause, measure_pause, saved_at, "
+                    "step_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (session["started_at"], session["preset_name"],
+                     session["rotation"], session["ch4_volume"],
+                     session["mix_pause"], session["measure_pause"],
+                     saved_at, len(session["steps"])))
+                sid = cur.lastrowid
+            else:
+                sid = session["id"]
+                self.conn.execute(
+                    "UPDATE sessions SET saved_at = ?, step_count = ? "
+                    "WHERE id = ?", (saved_at, len(session["steps"]), sid))
+                self.conn.execute(
+                    "DELETE FROM session_steps WHERE session_id = ?", (sid,))
+            self.conn.executemany(
+                "INSERT INTO session_steps (session_id, position, timestamp, "
+                "type, ch1, ch2, ch3, ch4) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [(sid, i, step["timestamp"], step["type"], *step["ch"])
+                 for i, step in enumerate(session["steps"])])
+        return sid
 
     # -- helpers (call inside a transaction) ---------------------------------
     def _insert(self, name, preset):

@@ -30,7 +30,7 @@ The settings are constants at the top of `reglo_gui.py`:
 | `DEBUGGING` | `True` uses the mock pump and a mock arm, so no hardware is needed. Set it to `False` to drive the real devices. |
 | `PUMP_ADDRESS` | Serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`. |
 | `SERIAL_PORT`, `SERIAL_BAUD` | Serial port and baud rate of the rotator arm. This must be a different port from the pump. |
-| `DB_PATH` | The preset database, `presets.db` next to `reglo_gui.py` by default. |
+| `DB_PATH` | The database for presets and session logs, `data.db` next to `reglo_gui.py` by default. |
 | `DEFAULT_PRESETS` | The example presets put into a new, empty database. |
 
 The rotator arm's serial protocol is described in
@@ -60,7 +60,7 @@ The rotator arm's serial protocol is described in
    Click 🗑 to delete a step that hasn't run yet; it asks you to confirm
    first.
 3. **Press Initialize.** This sets up the pump, homes the arm and turns it to
-   the preset's rotation.
+   the preset's rotation. It also starts a new session (see below).
 4. **Run the steps:**
    - **Run cur. step** runs the highlighted step.
    - **Run all** goes through the remaining steps without any further input.
@@ -70,22 +70,55 @@ The rotator arm's serial protocol is described in
    Finished steps are ticked and greyed out. During a wait, or the mixing
    pause, you can still edit the steps that come next.
 
-## Presets database
+## Sessions
 
-Presets are stored in an SQLite database, `presets.db`. **Save changes** and
-renaming write to it immediately, so presets are kept when the program
-closes. The first time the program runs, it creates the database and fills
-it with the example presets. To start over from the examples, close the
-program and delete `presets.db`. The file is not tracked by git.
+A session runs from **Initialize** until you start a new session or exit.
+It logs every step that finishes: when the step started, its type, and how
+many ml were pumped on each of channels 1–4. A Wait step logs 0 ml on every
+channel. A step that fails with a pump error is not logged.
 
-The database has two tables: `presets` (one row per preset with its
-settings) and `steps` (the steps of each preset, in order). Values are stored
-as the text that was typed, so they load back exactly as entered.
+The log is kept in memory and only written to the database when you save it:
+
+- **Save** (under Session) saves the session. It is only clickable when
+  steps have run since the last save. Saving again later adds the new steps
+  to the same session.
+- **New** starts a new session with the same set-up and starts the steps
+  again from step 1.
+- **New**, **Exit** (or closing the window) and **Initialize** ask whether
+  to save the current session first if it has unsaved steps: **Yes** saves
+  it, **No** discards the unsaved steps, and **Cancel** goes back.
+
+Each saved session has a header (when it started, and the preset's name and
+settings as they were used) and a footer (when it was last saved and how
+many steps it had then).
+
+## Database
+
+Presets and session logs are stored in an SQLite database, `data.db`.
+**Save changes** and renaming write presets to it immediately, so they are
+kept when the program closes. The first time the program runs, it creates
+the database and fills it with the example presets. To start over, close the
+program and delete `data.db`; this also deletes all saved sessions. The file
+is not tracked by git. A database from before sessions existed
+(`presets.db`) is renamed to `data.db` automatically, keeping its presets.
+
+The database has these tables:
+
+| Table | Holds |
+|---|---|
+| `presets` | One row per preset with its settings. |
+| `steps` | The steps of each preset, in order. |
+| `sessions` | One row per saved session: the header and footer. |
+| `session_steps` | The logged steps of each session: time, type, and ml on ch 1–4. |
+
+Preset values are stored as the text that was typed, so they load back
+exactly as entered.
 
 ## Files
 
 - `reglo_gui.py`: the GUI, the arm controller and the default presets.
-- `preset_store.py`: reads and writes presets in the SQLite database.
+- `data_store.py`: reads and writes presets and sessions in the SQLite
+  database.
 - `dilution_controller.py`: turns a step into pump commands for the
   `ismatec` library.
 - `mock_gui.py`: an old command-line test script. It is out of date and no
@@ -99,9 +132,10 @@ as the text that was typed, so they load back exactly as entered.
   estimate the delivered volume (flow rate × running time) and restart each
   channel with the remaining volume.
 - [x] **Store presets in SQLite.**
-- [ ] **Sessions**: a session runs from Initialize until the session ends.
-- [ ] **Log each step of a session.**
-  - [ ] Store the logs in SQLite.
+- [x] **Sessions**: a session runs from Initialize until the session ends.
+- [x] **Log each step of a session.**
+  - [x] Store the logs in SQLite.
+- [ ] **Restore a saved session.**
 - [ ] **Log explorer**: a button for browsing past logs.
   - [ ] Export logs to XLS or CSV.
 - [ ] **Take tube size into account.**

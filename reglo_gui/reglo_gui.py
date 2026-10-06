@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import ttk, messagebox
 from tkinter import font as tkfont
@@ -15,7 +16,7 @@ from tkinter import font as tkfont
 import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
-from preset_store import PresetStore
+from data_store import DataStore
 
 DEBUGGING = True
 
@@ -69,11 +70,12 @@ ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
 ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
                           # None = any non-empty line counts as "done".
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
-# ---- Presets -------------------------------------------------------------------
+# ---- Presets and session logs ---------------------------------------------------
 # Stored in an SQLite database next to this file. DEFAULT_PRESETS only seed an
 # empty database (the first run); PRESETS is the in-memory copy, loaded from
 # the database at startup and written through to it on Save and rename.
-DB_PATH = Path(__file__).with_name("presets.db")
+DB_PATH = Path(__file__).with_name("data.db")
+OLD_DB_PATH = Path(__file__).with_name("presets.db")   # name before sessions
 PRESETS = {}
 DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
@@ -101,6 +103,11 @@ def is_number(text):
 def to_float(text):
     """Parse a number, accepting both '0.001' and '0,001'."""
     return float(text.strip().replace(",", "."))
+
+
+def now_iso():
+    """Local time to the second, e.g. '2026-10-06T14:03:12'."""
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def is_duration(text):
@@ -200,7 +207,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reglo ICC Pump Control")
-        self.minsize(820, 640)
+        self.minsize(820, 790)
         self._apply_theme()
 
         # Pump side: DilutionController is async, so it lives on its own
@@ -233,6 +240,13 @@ class App(tk.Tk):
         self.auto_run = False   # "Run all": start the next step automatically
         self.stopping = False   # Stop pressed; the running step still finishes
         self.initialized = False
+        # Session: from Initialize until New session / Exit. Kept in memory and
+        # only written to the database when saved (see data_store for its
+        # shape). _saved_steps = how many steps the last save included.
+        self.session = None
+        self._saved_steps = 0
+        self._init_rotation = None   # rotation the arm was initialized to
+        self._step_log = None        # log entry of the step that is running
         self.duplicate_next = tk.BooleanVar(value=False)
         self.cells = []        # cells[row][col] -> Entry (channels 1-3)
         self.wait_cells = []   # wait_cells[row] -> Entry (seconds)
@@ -243,22 +257,24 @@ class App(tk.Tk):
         self.row_widgets = []  # row_widgets[row] -> every widget in that row
 
         self._build_header()
-        self._build_steps()
-        self._build_footer()
+        self._build_footer()    # before the steps: packed at the bottom first,
+        self._build_steps()     # so a short window never hides it
         self._load_preset(first)
         self._refresh_rows()
 
     def _open_store(self):
-        """Open the preset database (seeding it on first run) and load all
-        presets into PRESETS. Exits with a message if that fails."""
+        """Open the database (seeding it on first run) and load all presets
+        into PRESETS. Exits with a message if that fails."""
         try:
-            store = PresetStore(DB_PATH)
+            if not DB_PATH.exists() and OLD_DB_PATH.exists():
+                OLD_DB_PATH.rename(DB_PATH)     # keep presets saved before
+            store = DataStore(DB_PATH)
             if store.is_empty():
                 store.seed(DEFAULT_PRESETS)
             PRESETS.clear()
             PRESETS.update(store.load_all())
-        except sqlite3.Error as exc:
-            messagebox.showerror("Preset database",
+        except (sqlite3.Error, OSError) as exc:
+            messagebox.showerror("Database",
                                  f"Could not open {DB_PATH}:\n{exc}")
             raise SystemExit(1)
         return store
@@ -513,7 +529,7 @@ class App(tk.Tk):
         self.init_btn = ttk.Button(side, text="Initialize", width=16,
                                    command=self.on_initialize)
         self.init_btn.pack(fill="x", ipady=4)
-        ttk.Separator(side).pack(fill="x", pady=12)
+        ttk.Separator(side).pack(fill="x", pady=10)
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(fill="x", ipady=4)
@@ -524,10 +540,30 @@ class App(tk.Tk):
         self.stop_btn = ttk.Button(side, text="Stop after step", width=16,
                                    command=self.on_stop, state="disabled")
         self.stop_btn.pack(fill="x", pady=(8, 0), ipady=4)
-        ttk.Separator(side).pack(fill="x", pady=12)
+        ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         style="Card.TCheckbutton",
                         variable=self.duplicate_next).pack(anchor="w")
+
+        ttk.Separator(side).pack(fill="x", pady=10)
+        ttk.Label(side, text="Session", style="Heading.Card.TLabel").pack(
+            anchor="w")
+        self.session_label = ttk.Label(side, text="No session",
+                                       style="Muted.Card.TLabel")
+        self.session_label.pack(anchor="w", pady=(0, 8))
+        session_btns = ttk.Frame(side, style="Plain.Card.TFrame")
+        session_btns.pack(fill="x")
+        session_btns.columnconfigure((0, 1), weight=1, uniform="session")
+        self.save_session_btn = ttk.Button(session_btns, text="Save", width=6,
+                                           state="disabled",
+                                           command=self.on_save_session)
+        self.save_session_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4),
+                                   ipady=4)
+        self.new_session_btn = ttk.Button(session_btns, text="New", width=6,
+                                          state="disabled",
+                                          command=self.on_new_session)
+        self.new_session_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0),
+                                  ipady=4)
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -595,7 +631,7 @@ class App(tk.Tk):
 
     def _build_footer(self):
         footer = ttk.Frame(self, padding=(14, 6, 12, 12))
-        footer.pack(fill="x")
+        footer.pack(side="bottom", fill="x")
         self.status_dot = tk.Canvas(footer, width=10, height=10,
                                     highlightthickness=0, background=BG)
         self.status_dot.create_oval(1, 1, 9, 9, fill=MUTED, outline="",
@@ -709,13 +745,14 @@ class App(tk.Tk):
             self._fill_blanks(index)
 
     def _update_run_state(self):
-        if not hasattr(self, "stop_btn"):
+        if not hasattr(self, "new_session_btn"):
             return
         ok = self._can_run_current()
         for w in (self.run_btn, self.run_all_btn):
             w.configure(state="normal" if ok and not self.auto_run
                         else "disabled")
         self.stop_btn.configure(state="normal" if self.auto_run else "disabled")
+        self._update_session_ui()
 
     def _can_run_current(self):
         return (self.initialized and not self.busy
@@ -987,6 +1024,12 @@ class App(tk.Tk):
         if degrees is None:
             messagebox.showerror("Invalid rotation", self._rotation_error())
             return
+        if not self._end_session("Initialize",
+                                 "Save the current session before starting "
+                                 "a new one?"):
+            return
+        self.session = None                 # saved or discarded above
+        self._init_rotation = degrees
 
         self.init_btn.configure(state="disabled")
         self.initialized = False
@@ -1009,6 +1052,7 @@ class App(tk.Tk):
     def _init_done(self, _result):
         self.current_step = 0
         self.initialized = True
+        self._start_session()
         self.status.set("Ready")
         self._set_busy(False)
 
@@ -1045,6 +1089,8 @@ class App(tk.Tk):
                                  "a number.")
             return
         self._duplicate_into_next_row()
+        amounts = list(step) if kind != "wait" else [0.0] * 4
+        self._step_log = {"timestamp": now_iso(), "type": kind, "ch": amounts}
 
         if kind == "wait":
             self._start_wait(f"Step #{n}: waiting...", seconds)
@@ -1130,12 +1176,16 @@ class App(tk.Tk):
         self.wait_cells[nxt].var.set(self.wait_cells[cur].get())
 
     def _step_failed(self, exc):
+        self._step_log = None               # unknown amounts: not logged
         self.auto_run = self.stopping = False
         self.status.set("Pump error")
         self._set_busy(False)
         messagebox.showerror("Pump error", str(exc))
 
     def _step_done(self, _result):
+        if self.session is not None and self._step_log is not None:
+            self.session["steps"].append(self._step_log)
+        self._step_log = None
         self.stopping = False
         self.status.set(f"Step #{self.current_step + 1} done")
         self.current_step += 1              # lock finished row, advance
@@ -1148,6 +1198,84 @@ class App(tk.Tk):
         self._set_busy(False)
         if self.auto_run:
             self._run_next_auto()
+
+    # -- sessions: Initialize .. New session / Exit ---------------------------
+    def _start_session(self):
+        """New session whose header is the preset as it is used now."""
+        self.session = {
+            "id": None, "started_at": now_iso(),
+            "preset_name": self.current_preset.get(),
+            "rotation": self._init_rotation,
+            "ch4_volume": self.ch4_var.get().strip(),
+            "mix_pause": self.mix_var.get().strip(),
+            "measure_pause": self.measure_var.get().strip(),
+            "steps": []}
+        self._saved_steps = 0
+        print(f"[gui] session started with {self.session['preset_name']}")
+
+    def _session_unsaved(self):
+        return (self.session is not None
+                and len(self.session["steps"]) > self._saved_steps)
+
+    def _save_session(self):
+        """Write the session to the database. Returns False on failure."""
+        try:
+            self.session["id"] = self.store.save_session(self.session,
+                                                         now_iso())
+        except sqlite3.Error as exc:
+            messagebox.showerror("Save session",
+                                 f"Could not save the session:\n{exc}")
+            return False
+        self._saved_steps = len(self.session["steps"])
+        print(f"[gui] session {self.session['id']} saved "
+              f"({self._saved_steps} steps)")
+        self._update_session_ui()
+        return True
+
+    def _end_session(self, title, question):
+        """Before leaving the current session: if it has unsaved steps, ask
+        whether to save it. Returns True to go ahead, False to stay."""
+        if not self._session_unsaved():
+            return True
+        answer = messagebox.askyesnocancel(title, question, parent=self)
+        if answer is None:
+            return False                    # Cancel
+        if answer:
+            return self._save_session()     # stay if saving failed
+        return True                         # No: discard
+
+    def _update_session_ui(self):
+        if self.session is None:
+            text = "No session"
+        else:
+            n = len(self.session["steps"])
+            text = f"{n} step{'s' if n != 1 else ''} logged"
+            if n:
+                text += " \u00b7 " + ("unsaved" if self._session_unsaved()
+                                      else "saved")
+        self.session_label.configure(text=text)
+        self.save_session_btn.configure(
+            state="normal" if self._session_unsaved() else "disabled")
+        self.new_session_btn.configure(
+            state="normal" if self.initialized and not self.busy
+            else "disabled")
+
+    def on_save_session(self):
+        if self._session_unsaved():
+            self._save_session()
+
+    def on_new_session(self):
+        """Start a new session with the same hardware set-up, and run the steps
+        again from the first one."""
+        if not self._end_session("New session", "Save the current session "
+                                 "before starting a new one?"):
+            return
+        self.auto_run = self.stopping = False
+        self._start_session()
+        self.current_step = 0
+        self.status.set("New session started")
+        self._refresh_rows()
+        self._update_run_state()
 
     # -- run all: go through the steps without manual interaction -------------
     def on_run_all(self):
@@ -1177,6 +1305,9 @@ class App(tk.Tk):
         self.on_run_step()
 
     def on_exit(self):
+        if not self._end_session("Exit", "Save the current session before "
+                                 "exiting?"):
+            return
         self.arm.close()
         self.store.close()
         self.loop.call_soon_threadsafe(self.loop.stop)

@@ -8,4 +8,5 @@ readings/
 *.out
 *.log
 __pycache__/
+reglo_gui/data.db
 reglo_gui/presets.db

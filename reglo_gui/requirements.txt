@@ -1,0 +1,2 @@
+ismatec-control @ git+ssh://git@github.com/drivs/ismatec-pump.git@73e57e7af9c7e6041f6737b00d5601a9d8cb571d
+pyserial==3.5

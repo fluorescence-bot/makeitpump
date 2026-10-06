@@ -146,19 +146,24 @@ exactly as entered.
 
 ## Milestones
 
+### Done
+
+- [x] **Store presets in SQLite.**
+- [x] **Sessions**: a session runs from Initialize until the session ends.
+- [x] **Log each step of a session.**
+  - [x] Store the logs in SQLite.
+- [x] **Log explorer**: a button for browsing past logs.
+  - [x] Export logs to CSV.
+
+### To do
+
 - [ ] **Pause mid-step**, in both single-step and Run all mode.
   The pump does not support this well: it has no pause command, and stopping
   a channel loses its count of how much it has pumped. Resuming would have to
   estimate the delivered volume (flow rate × running time) and restart each
   channel with the remaining volume.
-- [x] **Store presets in SQLite.**
-- [x] **Sessions**: a session runs from Initialize until the session ends.
-- [x] **Log each step of a session.**
-  - [x] Store the logs in SQLite.
 - [ ] **Restore a saved session.**
-- [x] **Log explorer**: a button for browsing past logs.
-  - [x] Export logs to CSV.
-  - [ ] Export logs to XLS.
+- [ ] **Export logs to XLS** from the log explorer.
 - [ ] **Take tube size into account.**
 - [ ] **Show progress while pumping**, using the pump's `^U` event messages.
 - [ ] **Program options**, saved in SQLite: for example time as min:sec or

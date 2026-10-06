@@ -47,9 +47,11 @@ ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 PRESETS = {                              # stub data; replace with file/db later
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
+                "measure_pause": "30",
                 "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
                          {"type": "out"}]},
     "preset2": {"rotation": 20, "ch4_volume": "0.010", "mix_pause": "10",
+                "measure_pause": "30",
                 "rows": [{"type": "in", "volumes": ["0.002", "0.005", "0"]},
                          {"type": "wait", "seconds": "30"},
                          {"type": "out"},
@@ -246,18 +248,21 @@ class App(tk.Tk):
         consts.pack(anchor="w", pady=(4, 0))
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
+        self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
         entries = []
         for r, (text, var) in enumerate(
                 [(f"Rotation (\u00b0, {ARM_MIN_DEG}-{ARM_MAX_DEG}):",
                   self.rotation),
                  ("Ch 4 output volume (ml):", self.ch4_var),
-                 ("Mixing pause (s):", self.mix_var)]):
+                 ("Mixing pause (s):", self.mix_var),
+                 ("Measurement pause (s):", self.measure_var)]):
             ttk.Label(consts, text=text).grid(row=r, column=0, sticky="w")
             e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
             e.grid(row=r, column=1, padx=(6, 0), pady=(0, 2))
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
             entries.append(e)
-        self.rotation_entry, self.ch4_entry, self.mix_entry = entries
+        (self.rotation_entry, self.ch4_entry, self.mix_entry,
+         self.measure_entry) = entries
 
         right = ttk.Frame(header)
         right.grid(row=0, column=1, sticky="ne")
@@ -535,6 +540,7 @@ class App(tk.Tk):
             self._add_row(row["type"], row)
         self.ch4_var.set(str(data.get("ch4_volume", "0")))
         self.mix_var.set(str(data.get("mix_pause", "0")))
+        self.measure_var.set(str(data.get("measure_pause", "0")))
         self.current_preset.set(name)
         self.current_step = 0
         self._refresh_rows()
@@ -567,7 +573,8 @@ class App(tk.Tk):
         self.preset_box.configure(state="readonly" if idle else "disabled")
         self.ok_btn.configure(state="normal" if idle else "disabled")
         self.rotation_entry.configure(state="normal" if idle else "disabled")
-        for w in (self.save_btn, self.ch4_entry, self.mix_entry):
+        for w in (self.save_btn, self.ch4_entry, self.mix_entry,
+                  self.measure_entry):
             w.configure(state="normal" if editable else "disabled")
 
     # ---- callbacks ---------------------------------------------------------
@@ -593,9 +600,15 @@ class App(tk.Tk):
                                  "Mixing pause must be a number of seconds "
                                  "(0 or more).")
             return
+        if not is_duration(self.measure_var.get()):
+            messagebox.showerror("Invalid value",
+                                 "Measurement pause must be a number of "
+                                 "seconds (0 or more).")
+            return
         PRESETS[name]["rotation"] = degrees
         PRESETS[name]["ch4_volume"] = self.ch4_var.get().strip()
         PRESETS[name]["mix_pause"] = self.mix_var.get().strip()
+        PRESETS[name]["measure_pause"] = self.measure_var.get().strip()
         PRESETS[name]["rows"] = [self._row_data(i)
                                  for i in range(self._num_steps())
                                  if not self._step_is_empty(i)]
@@ -710,14 +723,19 @@ class App(tk.Tk):
         self.after(200, self._countdown, text, end)
 
     def on_add_step(self, kind):
-        """Add a step row at the bottom and put the cursor in its first field."""
-        self._add_row(kind)
+        """Add a step row at the bottom and put the cursor in its first field.
+        A new Pause row starts with the preset's measurement pause."""
+        data = {}
+        if kind == "wait" and is_duration(self.measure_var.get()):
+            data["seconds"] = self.measure_var.get().strip()
+        self._add_row(kind, data)
         r = self._num_steps() - 1
         self._refresh_rows()
         self._update_run_state()
         target = {"in": self.cells[r][0], "wait": self.wait_cells[r]}.get(kind)
         if target is not None and str(target.cget("state")) == "normal":
             target.focus_set()
+            target.select_range(0, "end")   # typing replaces the default
         self.after_idle(lambda: self.canvas.yview_moveto(1.0))
 
     def on_delete_row(self, index):

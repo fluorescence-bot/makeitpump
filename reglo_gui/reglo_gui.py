@@ -26,7 +26,6 @@ else:
 COLUMN_HEADERS = ["1", "2", "3"]   # volume columns = pump channels 1-3
 # Channel 4 is the output channel: its volume is one constant per preset
 # (enough to flush the cuvette), not part of each step.
-NUM_ROWS = 20
 
 # Step types. "in" pumps channels 1-3 and then waits the preset's mixing
 # pause; "out" pumps channel 4 with the preset's output volume; "wait" just
@@ -193,6 +192,8 @@ class App(tk.Tk):
         self.type_vars = []    # type_vars[row] -> StringVar ("Pump in", ...)
         self.type_boxes = []   # type_boxes[row] -> Combobox
         self.row_buttons = []  # row labels (#1, #2, ...)
+        self.delete_btns = []  # delete_btns[row] -> trashcan Button
+        self.row_widgets = []  # row_widgets[row] -> every widget in that row
 
         self._build_header()
         self._build_steps()
@@ -293,9 +294,9 @@ class App(tk.Tk):
             "<Configure>", lambda e: self.canvas.itemconfigure(win, width=e.width))
         self._bind_mousewheel()
 
-        # columns: 0 = row label, 1 = type, 2.. = channels, last = wait (s)
+        # columns: 0 = row label, 1 = type, 2.. = channels, then wait (s);
+        # the delete buttons go in one more column after these
         headers = ["", "Type"] + COLUMN_HEADERS + ["Wait (s)"]
-        wait_col = len(headers) - 1
         for c, name in enumerate(headers):
             ttk.Label(self.grid_frame, text=name, anchor="center",
                       font=("TkDefaultFont", 10, "bold")).grid(
@@ -303,39 +304,17 @@ class App(tk.Tk):
             if c >= 2:
                 self.grid_frame.columnconfigure(c, weight=1, uniform="col")
 
-        def make_entry(r, c):
-            var = tk.StringVar()
-            var.trace_add("write", lambda *_: self._update_run_state())
-            e = tk.Entry(self.grid_frame, justify="center", width=10,
-                         relief="solid", borderwidth=1, textvariable=var)
-            e.var = var   # keep a reference, or Tk drops the trace
-            e.grid(row=r + 1, column=c, sticky="ew", padx=1, pady=1, ipady=3)
-            return e
+        self._num_cols = len(headers)
 
-        for r in range(NUM_ROWS):
-            lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6,
-                            anchor="w")
-            lbl.grid(row=r + 1, column=0, padx=(2, 4), pady=1, sticky="ew")
-            self.row_buttons.append(lbl)
-
-            type_var = tk.StringVar(value=STEP_TYPES["in"])
-            box = ttk.Combobox(self.grid_frame, textvariable=type_var,
-                               values=list(STEP_TYPES.values()),
-                               state="readonly", width=9)
-            box.grid(row=r + 1, column=1, sticky="ew", padx=1, pady=1)
-            box.bind("<<ComboboxSelected>>",
-                     lambda ev, i=r: self._on_type_changed(i))
-            self.type_vars.append(type_var)
-            self.type_boxes.append(box)
-
-            row_entries = []
-            for c in range(len(COLUMN_HEADERS)):
-                e = make_entry(r, c + 2)
-                e.bind("<FocusOut>", lambda ev, i=r: self.after_idle(
-                    self._normalize_if_left, i))
-                row_entries.append(e)
-            self.cells.append(row_entries)
-            self.wait_cells.append(make_entry(r, wait_col))
+        # One row per step; this bar sits under the last row and adds steps.
+        self.add_bar = ttk.Frame(self.grid_frame)
+        ttk.Label(self.add_bar, text="Add row:").pack(side="left", padx=(0, 6))
+        for text, kind in [("Pause", "wait"), ("Output", "out"),
+                           ("Input", "in")]:
+            ttk.Button(self.add_bar, text=text, width=9,
+                       command=lambda k=kind: self.on_add_step(k)).pack(
+                side="left", padx=(0, 4))
+        self._place_add_bar()
 
         side = ttk.Frame(body, padding=(12, 0, 0, 0))
         side.grid(row=1, column=1, sticky="n")
@@ -354,6 +333,65 @@ class App(tk.Tk):
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         variable=self.duplicate_next).pack(pady=(10, 0),
                                                            anchor="w")
+
+    def _add_row(self, kind, data=None):
+        """Append a step row of type `kind`, filled from a PRESETS row dict."""
+        data = data or {}
+        r = len(self.row_buttons)
+        grid_row = r + 1                    # row 0 holds the column headers
+
+        def make_entry(c, value):
+            var = tk.StringVar(value=value)
+            var.trace_add("write", lambda *_: self._update_run_state())
+            e = tk.Entry(self.grid_frame, justify="center", width=10,
+                         relief="solid", borderwidth=1, textvariable=var)
+            e.var = var   # keep a reference, or Tk drops the trace
+            e.grid(row=grid_row, column=c, sticky="ew", padx=1, pady=1, ipady=3)
+            return e
+
+        lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6, anchor="w")
+        lbl.grid(row=grid_row, column=0, padx=(2, 4), pady=1, sticky="ew")
+        self.row_buttons.append(lbl)
+
+        type_var = tk.StringVar(value=STEP_TYPES[kind])
+        box = ttk.Combobox(self.grid_frame, textvariable=type_var,
+                           values=list(STEP_TYPES.values()),
+                           state="readonly", width=9)
+        box.grid(row=grid_row, column=1, sticky="ew", padx=1, pady=1)
+        box.bind("<<ComboboxSelected>>", lambda ev: self._on_type_changed(r))
+        self.type_vars.append(type_var)
+        self.type_boxes.append(box)
+
+        volumes = data.get("volumes", [])
+        row_entries = []
+        for c in range(len(COLUMN_HEADERS)):
+            e = make_entry(c + 2, volumes[c] if c < len(volumes) else "")
+            e.bind("<FocusOut>", lambda ev: self.after_idle(
+                self._normalize_if_left, r))
+            row_entries.append(e)
+        self.cells.append(row_entries)
+        wait = make_entry(self._num_cols - 1, data.get("seconds", ""))
+        self.wait_cells.append(wait)
+        delete = ttk.Button(self.grid_frame, text="\U0001F5D1", width=3,
+                            command=lambda: self.on_delete_row(r))
+        delete.grid(row=grid_row, column=self._num_cols, padx=(4, 2), pady=1)
+        self.delete_btns.append(delete)
+        self.row_widgets.append([lbl, box, *row_entries, wait, delete])
+        self._place_add_bar()
+
+    def _clear_rows(self):
+        for widgets in self.row_widgets:
+            for w in widgets:
+                w.destroy()
+        for rows in (self.row_buttons, self.row_widgets, self.type_vars,
+                     self.type_boxes, self.cells, self.wait_cells,
+                     self.delete_btns):
+            rows.clear()
+
+    def _place_add_bar(self):
+        self.add_bar.grid(row=len(self.row_buttons) + 1, column=0,
+                          columnspan=self._num_cols, sticky="w",
+                          padx=2, pady=(6, 4))
 
     def _build_footer(self):
         footer = ttk.Frame(self, padding=10)
@@ -383,14 +421,19 @@ class App(tk.Tk):
         pause) the upcoming rows stay editable."""
         for i, lbl in enumerate(self.row_buttons):
             if i < self.current_step:
-                text, bg, editable = f"✓ #{i + 1}", "#e0e0e0", False
+                text, bg = f"✓ #{i + 1}", "#e0e0e0"
             elif i == self.current_step:
-                text, bg, editable = f"▶ #{i + 1}", "#fff6c8", True
+                text, bg = f"▶ #{i + 1}", "#fff6c8"
             else:
-                text, bg, editable = f"#{i + 1}", "white", True
-            if self.busy and (i == self.current_step or not self.waiting):
-                editable = False
+                text, bg = f"#{i + 1}", "white"
+            editable = self._row_editable(i)
             lbl.configure(text=text)
+            delete = self.delete_btns[i]
+            if i < self.current_step:
+                delete.grid_remove()        # steps that have run stay
+            else:
+                delete.grid()
+                delete.configure(state="normal" if editable else "disabled")
             kind = self._row_type(i)
             self.type_boxes[i].configure(
                 state="readonly" if editable else "disabled")
@@ -400,6 +443,13 @@ class App(tk.Tk):
                 e.configure(state="normal" if editable and applies else "disabled",
                             bg=cell_bg, disabledbackground=cell_bg,
                             disabledforeground="#555555")
+
+    def _row_editable(self, i):
+        """Rows that haven't run can be changed, except while a step pumps
+        (then none) or waits (then all but the running one)."""
+        if i < self.current_step:
+            return False
+        return not (self.busy and (i == self.current_step or not self.waiting))
 
     def _on_type_changed(self, index):
         """Clear the fields that don't apply to the row's new type."""
@@ -437,7 +487,7 @@ class App(tk.Tk):
 
     def _can_run_current(self):
         return (self.initialized and not self.busy
-                and self.current_step < NUM_ROWS
+                and self.current_step < self._num_steps()
                 and not self._step_is_empty(self.current_step)
                 and self._row_is_complete(self.current_step))
 
@@ -459,16 +509,9 @@ class App(tk.Tk):
 
     def _load_preset(self, name):
         data = PRESETS[name]
-        # Set via the StringVars: Entry.insert/delete ignore disabled fields.
-        for r in range(NUM_ROWS):
-            self.type_vars[r].set(STEP_TYPES["in"])
-            for e in self.cells[r] + [self.wait_cells[r]]:
-                e.var.set("")
-        for r, row in enumerate(data["rows"][:NUM_ROWS]):
-            self.type_vars[r].set(STEP_TYPES[row["type"]])
-            for c, v in enumerate(row.get("volumes", [])[:len(COLUMN_HEADERS)]):
-                self.cells[r][c].var.set(v)
-            self.wait_cells[r].var.set(row.get("seconds", ""))
+        self._clear_rows()
+        for row in data["rows"]:
+            self._add_row(row["type"], row)
         self.ch4_var.set(str(data.get("ch4_volume", "0")))
         self.mix_var.set(str(data.get("mix_pause", "0")))
         self.current_preset.set(name)
@@ -476,6 +519,9 @@ class App(tk.Tk):
         self._refresh_rows()
         self.current_label.configure(text=f"Current: {name}")
         self.rotation_label.configure(text=f"Rotation: {data['rotation']}°")
+
+    def _num_steps(self):
+        return len(self.row_buttons)
 
     def _row_type(self, index):
         return STEP_KEYS[self.type_vars[index].get()]
@@ -523,7 +569,8 @@ class App(tk.Tk):
             return
         PRESETS[name]["ch4_volume"] = self.ch4_var.get().strip()
         PRESETS[name]["mix_pause"] = self.mix_var.get().strip()
-        PRESETS[name]["rows"] = [self._row_data(i) for i in range(NUM_ROWS)
+        PRESETS[name]["rows"] = [self._row_data(i)
+                                 for i in range(self._num_steps())
                                  if not self._step_is_empty(i)]
         print(f"[gui] saved changes to {name}")
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
@@ -639,10 +686,47 @@ class App(tk.Tk):
         self.status.set(f"{text} {left} s left" + self._stop_note())
         self.after(200, self._countdown, text, end)
 
+    def on_add_step(self, kind):
+        """Add a step row at the bottom and put the cursor in its first field."""
+        self._add_row(kind)
+        r = self._num_steps() - 1
+        self._refresh_rows()
+        self._update_run_state()
+        target = {"in": self.cells[r][0], "wait": self.wait_cells[r]}.get(kind)
+        if target is not None and str(target.cget("state")) == "normal":
+            target.focus_set()
+        self.after_idle(lambda: self.canvas.yview_moveto(1.0))
+
+    def on_delete_row(self, index):
+        if not self._row_editable(index):
+            return
+        if not messagebox.askyesno(
+                "Delete step",
+                f"Delete step #{index + 1} ({self.type_vars[index].get()})?",
+                icon="warning", parent=self):
+            return
+        if not self._row_editable(index):   # it started while the box was open
+            return
+        # Rebuild the table without that row, so every row's callbacks keep
+        # pointing at the right index.
+        rows = [self._row_data(i) for i in range(self._num_steps())]
+        del rows[index]
+        self._clear_rows()
+        for row in rows:
+            self._add_row(row["type"], row)
+        self._place_add_bar()
+        self._refresh_rows()
+        self._update_run_state()
+
     def _duplicate_into_next_row(self):
-        """If ticked and the next row is empty, copy the current row into it."""
+        """If ticked, copy the current row into the next row if that is empty,
+        or into a new row if this is the last one. Not during Run all: each
+        copied step would add another, so it would never finish."""
         cur, nxt = self.current_step, self.current_step + 1
-        if not self.duplicate_next.get() or nxt >= NUM_ROWS:
+        if not self.duplicate_next.get() or self.auto_run:
+            return
+        if nxt >= self._num_steps():
+            self._add_row(self._row_type(cur), self._row_data(cur))
             return
         if not self._step_is_empty(nxt):
             return                      # never overwrite an existing step
@@ -661,8 +745,7 @@ class App(tk.Tk):
         self.stopping = False
         self.status.set(f"Step #{self.current_step + 1} done")
         self.current_step += 1              # lock finished row, advance
-        at_end = (self.current_step >= NUM_ROWS
-                  or self._step_is_empty(self.current_step))
+        at_end = self.current_step >= self._num_steps()
         if at_end:
             if self.auto_run:
                 self.status.set("All steps done")
@@ -689,7 +772,7 @@ class App(tk.Tk):
         return " (stopping after this step)" if self.stopping else ""
 
     def _run_next_auto(self):
-        if self.current_step < NUM_ROWS:
+        if self.current_step < self._num_steps():
             self._fill_blanks(self.current_step)    # blanks -> 0.0, as on leave
         if not self._can_run_current():
             self.auto_run = False

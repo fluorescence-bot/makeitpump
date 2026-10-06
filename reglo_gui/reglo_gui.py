@@ -465,8 +465,9 @@ class App(tk.Tk):
                                        values=list(PRESETS), state="readonly",
                                        width=18)
         self.preset_box.pack(side="left")
-        self.ok_btn = ttk.Button(pick, text="OK", command=self.on_choose_preset)
-        self.ok_btn.pack(side="left", padx=(6, 0))
+        self.load_btn = ttk.Button(pick, text="Load",
+                                 command=self.on_choose_preset)
+        self.load_btn.pack(side="left", padx=(6, 0))
 
         actions = ttk.Frame(header, style="Plain.Card.TFrame")
         actions.grid(row=1, column=1, sticky="se")
@@ -837,7 +838,7 @@ class App(tk.Tk):
         idle = not self.busy
         editable = idle or self.waiting
         self.preset_box.configure(state="readonly" if idle else "disabled")
-        self.ok_btn.configure(state="normal" if idle else "disabled")
+        self.load_btn.configure(state="normal" if idle else "disabled")
         self.rename_btn.configure(state="normal" if idle else "disabled")
         self.new_preset_btn.configure(state="normal" if idle else "disabled")
         self.save_btn.configure(state="normal" if editable else "disabled")

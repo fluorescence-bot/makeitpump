@@ -38,7 +38,7 @@ The rotator arm's serial protocol is described in
 
 ## Using it
 
-1. **Choose a preset** in the drop-down and press **OK**. A preset holds the
+1. **Choose a preset** in the drop-down and press **Load**. A preset holds the
    steps plus these settings:
    - **Rotation**: arm angle, a whole number of degrees from 0 to 60.
    - **Ch 4 output volume**: how much a Pump out step pumps out, in ml.

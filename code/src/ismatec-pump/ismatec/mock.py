@@ -182,13 +182,7 @@ class Communicator(MagicMock):
                 vol = self.state['channels'][channel - 1]['volume']
                 rate = self.state['channels'][channel - 1]['flowrate']
                 if vol and rate:
-                    # Volume-at-rate run: simulate it finishing in the
-                    # background, then fire the "stopped" event.
-                    threading.Thread(
-                        target=self._simulate_dispense,
-                        args=(channel, vol, rate),
-                        daemon=True,
-                    ).start()
+                    self._simulate_dispense(channel, vol, rate)   # blocks until done
                 elif self.on_start:
                     self.on_start(channel)  # continuous-flow run, no auto-stop
             else:

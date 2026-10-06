@@ -132,6 +132,8 @@ class Communicator(MagicMock):
         elif command.startswith('v'):  # SET volume — register only, no motion yet
             self.state['channels'][channel - 1]['volume'] = self._decode_packed(command)
             return '*'
+        elif command.startswith('E'): # Returns whether the pump is currently running or not. + = running, - = stopped
+            return '+' if any(self.pump.running.values) else '-'
         else:
             raise NotImplementedError
 

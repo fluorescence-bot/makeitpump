@@ -35,6 +35,8 @@ STEP_TYPES = {"in": "Pump in", "out": "Pump out", "wait": "Wait"}
 STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
+RENAME = "\u270E"
+PRESET_NAME_MAX = 40
 
 # ---- Theme -------------------------------------------------------------------
 BG = "#eef1f5"            # window background, behind the cards
@@ -356,9 +358,15 @@ class App(tk.Tk):
         left.grid(row=0, column=0, rowspan=2, sticky="nw")
         ttk.Label(left, text="PRESET", style="Muted.Card.TLabel",
                   font=self.font_small_bold).pack(anchor="w")
-        self.current_label = ttk.Label(left, text="preset1",
+        title_row = ttk.Frame(left, style="Plain.Card.TFrame")
+        title_row.pack(anchor="w", pady=(0, 8))
+        self.current_label = ttk.Label(title_row, text="preset1",
                                        style="Title.Card.TLabel")
-        self.current_label.pack(anchor="w", pady=(0, 8))
+        self.current_label.pack(side="left")
+        self.rename_btn = ttk.Button(title_row, text=RENAME, width=3,
+                                     style="Icon.TButton",
+                                     command=self.on_rename_preset)
+        self.rename_btn.pack(side="left", padx=(6, 0))
         consts = ttk.Frame(left, style="Plain.Card.TFrame")
         consts.pack(anchor="w")
         self.ch4_var = tk.StringVar(value="0")
@@ -744,6 +752,7 @@ class App(tk.Tk):
         editable = idle or self.waiting
         self.preset_box.configure(state="readonly" if idle else "disabled")
         self.ok_btn.configure(state="normal" if idle else "disabled")
+        self.rename_btn.configure(state="normal" if idle else "disabled")
         self.save_btn.configure(state="normal" if editable else "disabled")
         self._refresh_consts()
 
@@ -804,6 +813,87 @@ class App(tk.Tk):
         self.init_btn.configure(state="normal")
         self.status.set("Not initialized")
         self._update_run_state()
+
+    def _preset_name_error(self, new, old):
+        """Why `new` can't be the new name of preset `old`, or None if it can."""
+        if not new:
+            return "The name can't be empty."
+        if len(new) > PRESET_NAME_MAX:
+            return f"The name can be at most {PRESET_NAME_MAX} characters."
+        clash = next((k for k in PRESETS
+                      if k != old and k.lower() == new.lower()), None)
+        if clash is not None:
+            return f"There is already a preset called '{clash}'."
+        return None
+
+    def _ask_preset_name(self, old):
+        """Themed modal dialog. Returns the new name, or None if cancelled.
+        Invalid names show an error in the dialog, which stays open."""
+        dlg = tk.Toplevel(self, background=BG)
+        dlg.title("Rename preset")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        card = ttk.Frame(dlg, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+        ttk.Label(card, text="Rename preset", style="Heading.Card.TLabel").pack(
+            anchor="w")
+        ttk.Label(card, text="New name", style="Muted.Card.TLabel").pack(
+            anchor="w", pady=(10, 2))
+        var = tk.StringVar(value=old)
+        entry = ttk.Entry(card, textvariable=var, width=32)
+        entry.pack(fill="x")
+        error = ttk.Label(card, text="", style="Card.TLabel",
+                          foreground=DANGER)
+        error.pack(anchor="w", pady=(4, 0))
+        buttons = ttk.Frame(card, style="Plain.Card.TFrame")
+        buttons.pack(fill="x", pady=(10, 0))
+        result = {"name": None}
+
+        def ok(_event=None):
+            new = var.get().strip()
+            message = None if new == old else self._preset_name_error(new, old)
+            if message:
+                error.configure(text=message)
+                entry.focus_set()
+                return
+            result["name"] = new
+            dlg.destroy()
+
+        ttk.Button(buttons, text="Rename", style="Accent.TButton",
+                   command=ok).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(
+            side="right", padx=(0, 8))
+        var.trace_add("write", lambda *_: error.configure(text=""))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+        # centre over the main window, then make it modal
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        dlg.wait_visibility()
+        dlg.grab_set()
+        entry.focus_set()
+        entry.select_range(0, "end")
+        self.wait_window(dlg)
+        return result["name"]
+
+    def on_rename_preset(self):
+        old = self.current_preset.get()
+        new = self._ask_preset_name(old)
+        if new is None or new == old:
+            return                          # cancelled or unchanged
+        # Rebuild in place to keep the presets' order in the drop-down.
+        items = [(new if k == old else k, v) for k, v in PRESETS.items()]
+        PRESETS.clear()
+        PRESETS.update(items)
+        self.current_preset.set(new)
+        if self.chosen_preset.get() == old:
+            self.chosen_preset.set(new)
+        self.preset_box.configure(values=list(PRESETS))
+        self.current_label.configure(text=new)
+        print(f"[gui] renamed preset {old} -> {new}")
 
     def on_save(self):
         name = self.current_preset.get()

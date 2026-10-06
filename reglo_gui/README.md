@@ -46,7 +46,8 @@ The rotator arm's serial protocol is described in
      seconds.
 
    Each setting is locked (🔒) to prevent accidental edits. Click the lock to
-   edit it, and click ↶ to go back to the saved value.
+   edit it, and click ↶ to go back to the saved value. Click ✎ next to the
+   preset's name to rename the preset.
 2. **Edit the steps.** There are three step types:
    - **Pump in**: pumps the volumes (ml) in columns 1–3 on channels 1–3,
      then waits for the mixing pause.

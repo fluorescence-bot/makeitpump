@@ -42,6 +42,7 @@ STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
 RENAME = "\u270E"
+NO_SESSION_STATUS = "No session \u2014 press New session to start"
 PRESET_NAME_MAX = 40
 
 # ---- Theme -------------------------------------------------------------------
@@ -235,22 +236,23 @@ class App(tk.Tk):
         self.current_preset = tk.StringVar(value=first)
         self.chosen_preset = tk.StringVar(value=first)
         self.rotation = tk.StringVar(value="45")
-        self.status = tk.StringVar(value="Not initialized")
+        self.status = tk.StringVar(value=NO_SESSION_STATUS)
         self.current_step = 0   # row that will run next; rows above are done
-        self.busy = False       # initializing or running a step
+        self.busy = False       # setting up the hardware or running a step
         self.waiting = False    # busy, but only waiting (wait step / mixing):
                                 # upcoming rows stay editable meanwhile
         self._wait_end = None   # monotonic time the current wait ends
         self.auto_run = False   # "Run all": start the next step automatically
         self.stopping = False   # Stop pressed; the running step still finishes
         self.initialized = False
-        # Session: from Initialize until New session / Load / Exit. Saved to
+        # Session: from New session until the next New session / Load /
+        # Exit. It starts with setting up the pump and arm. Saved to
         # the database after every step (see data_store for its shape).
         # _saved_steps = how many steps the last save included; fewer than
         # logged only if an automatic save failed.
         self.session = None
         self._saved_steps = 0
-        self._init_rotation = None   # rotation the arm was initialized to
+        self._init_rotation = None   # rotation the arm was turned to
         self._step_log = None        # log entry of the step that is running
         self._export_dir = None      # folder of the last CSV export
         self.duplicate_next = tk.BooleanVar(value=False)
@@ -547,12 +549,17 @@ class App(tk.Tk):
 
         side = ttk.Frame(body, style="Card.TFrame", padding=14)
         side.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        ttk.Label(side, text="Session", style="Heading.Card.TLabel").pack(
+            anchor="w")
+        self.session_label = ttk.Label(side, text="No session",
+                                       style="Muted.Card.TLabel")
+        self.session_label.pack(anchor="w", pady=(0, 8))
+        self.new_session_btn = ttk.Button(side, text="New session", width=16,
+                                          command=self.on_new_session)
+        self.new_session_btn.pack(fill="x", ipady=4)
+        ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Label(side, text="Run", style="Heading.Card.TLabel").pack(
             anchor="w", pady=(0, 8))
-        self.init_btn = ttk.Button(side, text="Initialize", width=16,
-                                   command=self.on_initialize)
-        self.init_btn.pack(fill="x", ipady=4)
-        ttk.Separator(side).pack(fill="x", pady=10)
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(fill="x", ipady=4)
@@ -567,17 +574,6 @@ class App(tk.Tk):
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         style="Card.TCheckbutton",
                         variable=self.duplicate_next).pack(anchor="w")
-
-        ttk.Separator(side).pack(fill="x", pady=10)
-        ttk.Label(side, text="Session", style="Heading.Card.TLabel").pack(
-            anchor="w")
-        self.session_label = ttk.Label(side, text="No session",
-                                       style="Muted.Card.TLabel")
-        self.session_label.pack(anchor="w", pady=(0, 8))
-        self.new_session_btn = ttk.Button(side, text="New session", width=16,
-                                          state="disabled",
-                                          command=self.on_new_session)
-        self.new_session_btn.pack(fill="x", ipady=4)
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -661,7 +657,7 @@ class App(tk.Tk):
 
     def _update_status_dot(self):
         """Blue while running, green when ready, red on errors, grey before
-        Initialize."""
+        a session is started."""
         text = self.status.get().lower()
         if "error" in text or "failed" in text:
             colour = DANGER
@@ -825,7 +821,7 @@ class App(tk.Tk):
         return {"type": "out"}
 
     def _update_header(self):
-        """Preset switching and rotation (only applied by Initialize) only when
+        """Preset switching and rotation (only applied by New session) only when
         idle; the other preset constants and Save also while a step waits."""
         idle = not self.busy
         editable = idle or self.waiting
@@ -838,7 +834,7 @@ class App(tk.Tk):
 
     # -- preset constants: lock + revert --------------------------------------
     def _const_allowed(self, key):
-        """Rotation only while idle (it is applied by Initialize); the others
+        """Rotation only while idle (it is applied by New session); the others
         also while a step just waits."""
         if key == "rotation":
             return not self.busy
@@ -895,11 +891,10 @@ class App(tk.Tk):
         self._open_preset(name)
 
     def _open_preset(self, name):
-        """Show preset `name`; Initialize is needed again before running."""
+        """Show preset `name`; a new session is needed before running."""
         self._load_preset(name)
         self.initialized = False
-        self.init_btn.configure(state="normal")
-        self.status.set("Not initialized")
+        self.status.set(NO_SESSION_STATUS)
         self._update_run_state()
 
     def _leave_session_for(self, name):
@@ -1115,7 +1110,7 @@ class App(tk.Tk):
         print(f"[gui] saved changes to {name}")
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 
-    # -- initialize: pump setup + arm HOME/rotate, all on the asyncio thread --
+    # -- hardware set-up: pump + arm HOME/rotate, all on the asyncio thread ---
     async def _init_hardware(self, degrees):
         if self.controller is None:
             # Create inside the running loop (the mock grabs the current loop).
@@ -1130,25 +1125,6 @@ class App(tk.Tk):
             self.arm.rotate(degrees)
         await asyncio.to_thread(arm_sequence)
 
-    def on_initialize(self):
-        degrees = to_degrees(self.rotation.get())
-        if degrees is None:
-            messagebox.showerror("Invalid rotation", self._rotation_error())
-            return
-        if not self._end_session("Initialize",
-                                 "Save the current session before starting "
-                                 "a new one?"):
-            return
-        self.session = None                 # saved or discarded above
-        self._init_rotation = degrees
-
-        self.init_btn.configure(state="disabled")
-        self.initialized = False
-        self._set_busy(True)
-        self.status.set("Initializing...")
-        self._submit(self._init_hardware(degrees),
-                     self._init_done, self._init_failed)
-
     def _rotation_error(self):
         return (f"Rotation '{self.rotation.get().strip()}' is not valid.\n"
                 f"It must be a whole number of degrees from {ARM_MIN_DEG} "
@@ -1156,15 +1132,16 @@ class App(tk.Tk):
 
     def _init_failed(self, exc):
         self._set_busy(False)
-        self.init_btn.configure(state="normal")
-        self.status.set("Initialization failed")
-        messagebox.showerror("Initialization failed", str(exc))
+        self.status.set("Setting up the pump and arm failed \u2014 no session")
+        messagebox.showerror("New session",
+                             f"Could not set up the pump and arm, so no "
+                             f"session was started:\n{exc}")
 
     def _init_done(self, _result):
         self.current_step = 0
         self.initialized = True
         self._start_session()
-        self.status.set("Ready")
+        self.status.set("New session started")
         self._set_busy(False)
 
     def _set_busy(self, busy, waiting=False):
@@ -1311,12 +1288,11 @@ class App(tk.Tk):
             if self.auto_run:
                 self.status.set("All steps done")
             self.auto_run = False
-            self.init_btn.configure(state="normal")
         self._set_busy(False)
         if self.auto_run:
             self._run_next_auto()
 
-    # -- sessions: Initialize .. New session / Exit ---------------------------
+    # -- sessions: New session .. New session / Load / Exit --------------------
     def _start_session(self):
         """New session whose header is the preset as it is used now."""
         self.session = {
@@ -1388,21 +1364,26 @@ class App(tk.Tk):
                                       else "saved")
         self.session_label.configure(text=text)
         self.new_session_btn.configure(
-            state="normal" if self.initialized and not self.busy
-            else "disabled")
+            state="normal" if not self.busy else "disabled")
 
     def on_new_session(self):
-        """Start a new session with the same hardware set-up, and run the steps
-        again from the first one."""
+        """End the current session, set up the pump, home the arm and turn it
+        to the preset's rotation, then start a new session from step 1."""
+        degrees = to_degrees(self.rotation.get())
+        if degrees is None:                 # check before ending anything
+            messagebox.showerror("Invalid rotation", self._rotation_error())
+            return
         if not self._confirm_end_session(
                 "New session", "Starting a new session ends the current one."):
             return
+        self.session = None
+        self._init_rotation = degrees
         self.auto_run = self.stopping = False
-        self._start_session()
-        self.current_step = 0
-        self.status.set("New session started")
-        self._refresh_rows()
-        self._update_run_state()
+        self.initialized = False
+        self._set_busy(True)
+        self.status.set("Setting up the pump and arm...")
+        self._submit(self._init_hardware(degrees),
+                     self._init_done, self._init_failed)
 
     # -- log explorer: browse saved sessions, open or export them -------------
     def on_log_explorer(self):

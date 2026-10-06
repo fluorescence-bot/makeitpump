@@ -64,8 +64,9 @@ The rotator arm's serial protocol is described in
    Use **Add row: Pause / Output / Input** under the table to add a step.
    Click 🗑 to delete a step that hasn't run yet; it asks you to confirm
    first.
-3. **Press Initialize.** This sets up the pump, homes the arm and turns it to
-   the preset's rotation. It also starts a new session (see below).
+3. **Press New session.** This sets up the pump, homes the arm and turns it
+   to the preset's rotation, then starts a new session from step 1 (see
+   below). If setting up the pump or arm fails, no session is started.
 4. **Run the steps:**
    - **Run cur. step** runs the highlighted step.
    - **Run all** goes through the remaining steps without any further input.
@@ -77,7 +78,7 @@ The rotator arm's serial protocol is described in
 
 ## Sessions
 
-A session runs from **Initialize** until you start a new session, load
+A session runs from **New session** until you start another one, load
 another preset, or exit.
 It logs every step that finishes: when the step started, its type, how many
 ml were pumped on each of channels 1–4, and for a Wait step how many seconds
@@ -89,17 +90,12 @@ if the program stops. If an automatic save fails (for example, a full disk),
 the error is shown and **Run all** stops, so no more steps run without being
 logged; the next step's save includes the unsaved steps.
 
-**New session** (under Session) starts a new session with the same set-up
-and starts the steps again from step 1.
-
 **New session**, **Load**, **New preset…** (which opens the new preset)
 and **Exit** (or closing the window) end the current session, so they warn
 first and ask to continue (**OK**) or go back (**Cancel**). If an automatic
 save failed, they instead ask whether to save the unsaved steps first:
-**Yes** saves them, **No** discards them, and **Cancel** goes back.
-**Initialize** also starts a new session; it only asks when steps are
-unsaved. After loading a preset, press **Initialize** to start a new
-session.
+**Yes** saves them, **No** discards them, and **Cancel** goes back. After
+loading a preset, press **New session** to start running it.
 
 Each saved session has a header (when it started, and the preset's name and
 settings as they were used) and a footer (when it was last saved and how
@@ -161,7 +157,7 @@ exactly as entered.
 ### Done
 
 - [x] **Store presets in SQLite.**
-- [x] **Sessions**: a session runs from Initialize until the session ends.
+- [x] **Sessions**: a session runs from New session until the session ends.
 - [x] **Log each step of a session.**
   - [x] Store the logs in SQLite.
 - [x] **Log explorer**: a button for browsing past logs.

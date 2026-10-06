@@ -184,6 +184,7 @@ class App(tk.Tk):
             self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
                                      ARM_DONE_REPLY, ARM_TIMEOUT)
         self.protocol("WM_DELETE_WINDOW", self.on_exit)
+        self.bind_all("<Button-1>", self._on_click_anywhere, add="+")
 
         self.current_preset = tk.StringVar(value="preset1")
         self.chosen_preset = tk.StringVar(value="preset1")
@@ -409,6 +410,16 @@ class App(tk.Tk):
         ttk.Label(footer, textvariable=self.status).pack(side="left")
         ttk.Button(footer, text="Exit", width=14,
                    command=self.on_exit).pack(side="right")
+
+    def _on_click_anywhere(self, event):
+        """Clicking anything but a text field leaves the current field (Tk
+        only moves focus on clicks into other fields). The typed value stays."""
+        w = event.widget
+        if isinstance(w, str):          # combobox drop-down list: leave alone
+            return
+        if isinstance(w, (tk.Entry, ttk.Entry)):    # incl. ttk.Combobox
+            return
+        self.focus_set()
 
     def _bind_mousewheel(self):
         def on_wheel(event):

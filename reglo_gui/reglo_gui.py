@@ -33,6 +33,8 @@ COLUMN_HEADERS = ["1", "2", "3"]   # volume columns = pump channels 1-3
 STEP_TYPES = {"in": "Pump in", "out": "Pump out", "wait": "Wait"}
 STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
+LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
+
 # ---- Pump configuration ------------------------------------------------------
 # Use COMx on Windows. NOTE: must be a different port than the Arduino arm.
 PUMP_ADDRESS = "/dev/ttyACM0"
@@ -249,20 +251,28 @@ class App(tk.Tk):
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
         self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
-        entries = []
-        for r, (text, var) in enumerate(
-                [(f"Rotation (\u00b0, {ARM_MIN_DEG}-{ARM_MAX_DEG}):",
+        # Preset constants, keyed like PRESETS. Each starts locked against
+        # accidental edits; the revert button restores the saved value.
+        self.consts = {}
+        for r, (key, text, var) in enumerate(
+                [("rotation", f"Rotation (\u00b0, {ARM_MIN_DEG}-{ARM_MAX_DEG}):",
                   self.rotation),
-                 ("Ch 4 output volume (ml):", self.ch4_var),
-                 ("Mixing pause (s):", self.mix_var),
-                 ("Measurement pause (s):", self.measure_var)]):
+                 ("ch4_volume", "Ch 4 output volume (ml):", self.ch4_var),
+                 ("mix_pause", "Mixing pause (s):", self.mix_var),
+                 ("measure_pause", "Measurement pause (s):", self.measure_var)]):
             ttk.Label(consts, text=text).grid(row=r, column=0, sticky="w")
             e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
             e.grid(row=r, column=1, padx=(6, 0), pady=(0, 2))
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
-            entries.append(e)
-        (self.rotation_entry, self.ch4_entry, self.mix_entry,
-         self.measure_entry) = entries
+            lock = ttk.Button(consts, text=LOCKED, width=3,
+                              command=lambda k=key: self.on_toggle_lock(k))
+            lock.grid(row=r, column=2, padx=(4, 0), pady=(0, 2))
+            revert = ttk.Button(consts, text=REVERT, width=3,
+                                command=lambda k=key: self.on_revert_const(k))
+            revert.grid(row=r, column=3, padx=(2, 0), pady=(0, 2))
+            self.consts[key] = {"var": var, "entry": e, "lock_btn": lock,
+                                "revert_btn": revert, "locked": True}
+            var.trace_add("write", lambda *_, k=key: self._refresh_const(k))
 
         right = ttk.Frame(header)
         right.grid(row=0, column=1, sticky="ne")
@@ -538,14 +548,14 @@ class App(tk.Tk):
         self._clear_rows()
         for row in data["rows"]:
             self._add_row(row["type"], row)
-        self.ch4_var.set(str(data.get("ch4_volume", "0")))
-        self.mix_var.set(str(data.get("mix_pause", "0")))
-        self.measure_var.set(str(data.get("measure_pause", "0")))
         self.current_preset.set(name)
+        for key, c in self.consts.items():
+            c["var"].set(self._saved_const(key))
+            c["locked"] = True
         self.current_step = 0
         self._refresh_rows()
+        self._refresh_consts()
         self.current_label.configure(text=f"Current: {name}")
-        self.rotation.set(str(data["rotation"]))
 
     def _num_steps(self):
         return len(self.row_buttons)
@@ -572,10 +582,58 @@ class App(tk.Tk):
         editable = idle or self.waiting
         self.preset_box.configure(state="readonly" if idle else "disabled")
         self.ok_btn.configure(state="normal" if idle else "disabled")
-        self.rotation_entry.configure(state="normal" if idle else "disabled")
-        for w in (self.save_btn, self.ch4_entry, self.mix_entry,
-                  self.measure_entry):
-            w.configure(state="normal" if editable else "disabled")
+        self.save_btn.configure(state="normal" if editable else "disabled")
+        self._refresh_consts()
+
+    # -- preset constants: lock + revert --------------------------------------
+    def _const_allowed(self, key):
+        """Rotation only while idle (it is applied by Initialize); the others
+        also while a step just waits."""
+        if key == "rotation":
+            return not self.busy
+        return not self.busy or self.waiting
+
+    def _saved_const(self, key):
+        return str(PRESETS[self.current_preset.get()].get(key, "0")).strip()
+
+    def _refresh_consts(self):
+        for key in self.consts:
+            self._refresh_const(key)
+
+    def _refresh_const(self, key):
+        if not hasattr(self, "consts") or key not in self.consts:
+            return                          # still building the header
+        c = self.consts[key]
+        allowed = self._const_allowed(key)
+        if not allowed:
+            state = "disabled"
+        else:
+            state = "readonly" if c["locked"] else "normal"
+        c["entry"].configure(state=state)
+        c["lock_btn"].configure(text=LOCKED if c["locked"] else UNLOCKED,
+                                state="normal" if allowed else "disabled")
+        changed = c["var"].get().strip() != self._saved_const(key)
+        c["revert_btn"].configure(
+            state="normal" if allowed and changed else "disabled")
+
+    def on_toggle_lock(self, key):
+        c = self.consts[key]
+        c["locked"] = not c["locked"]
+        self._refresh_const(key)
+        if not c["locked"]:
+            c["entry"].focus_set()
+            c["entry"].select_range(0, "end")
+        else:
+            self.focus_set()
+
+    def on_revert_const(self, key):
+        """Back to the value saved in the preset, and lock it again."""
+        c = self.consts[key]
+        c["var"].set(self._saved_const(key))
+        c["locked"] = True
+        self._refresh_const(key)
+        self.focus_set()
+        self._update_run_state()
 
     # ---- callbacks ---------------------------------------------------------
     def on_choose_preset(self):
@@ -612,6 +670,9 @@ class App(tk.Tk):
         PRESETS[name]["rows"] = [self._row_data(i)
                                  for i in range(self._num_steps())
                                  if not self._step_is_empty(i)]
+        for c in self.consts.values():
+            c["locked"] = True
+        self._refresh_consts()
         print(f"[gui] saved changes to {name}")
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 

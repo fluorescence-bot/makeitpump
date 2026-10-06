@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import re
 import threading
 import time
@@ -22,8 +23,16 @@ else:
     from ismatec import Pump
 
 # ---- Configuration ---------------------------------------------------------
-COLUMN_HEADERS = ["1", "2", "3", "4"]   # one value per pump channel
+COLUMN_HEADERS = ["1", "2", "3"]   # volume columns = pump channels 1-3
+# Channel 4 is the output channel: its volume is one constant per preset
+# (enough to flush the cuvette), not part of each step.
 NUM_ROWS = 20
+
+# Step types. "in" pumps channels 1-3 and then waits the preset's mixing
+# pause; "out" pumps channel 4 with the preset's output volume; "wait" just
+# waits a number of seconds (async, so the GUI stays usable meanwhile).
+STEP_TYPES = {"in": "Pump in", "out": "Pump out", "wait": "Wait"}
+STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 # ---- Pump configuration ------------------------------------------------------
 # Use COMx on Windows. NOTE: must be a different port than the Arduino arm.
@@ -38,9 +47,15 @@ ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
                           # None = any non-empty line counts as "done".
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 PRESETS = {                              # stub data; replace with file/db later
-    "preset1": {"rotation": 45, "rows": [["0.001", "0.002", "0", "0"]]},
-    "preset2": {"rotation": 20, "rows": [["0.002", "0.005", "0", "0"],
-                                         ["0.001", "0.002", "0", "0"]]},
+    "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
+                "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
+                         {"type": "out"}]},
+    "preset2": {"rotation": 20, "ch4_volume": "0.010", "mix_pause": "10",
+                "rows": [{"type": "in", "volumes": ["0.002", "0.005", "0"]},
+                         {"type": "wait", "seconds": "30"},
+                         {"type": "out"},
+                         {"type": "in", "volumes": ["0.001", "0.002", "0"]},
+                         {"type": "out"}]},
 }
 
 
@@ -55,6 +70,11 @@ def is_number(text):
 def to_float(text):
     """Parse a number, accepting both '0.001' and '0,001'."""
     return float(text.strip().replace(",", "."))
+
+
+def is_duration(text):
+    """True for a non-negative number of seconds."""
+    return is_number(text) and to_float(text) >= 0
 
 
 class ArmError(Exception):
@@ -160,10 +180,16 @@ class App(tk.Tk):
         self.rotation = tk.StringVar(value="45")
         self.status = tk.StringVar(value="Not initialized")
         self.current_step = 0   # row that will run next; rows above are done
-        self.pumping = False
+        self.busy = False       # initializing or running a step
+        self.waiting = False    # busy, but only waiting (wait step / mixing):
+                                # upcoming rows stay editable meanwhile
+        self._wait_end = None   # monotonic time the current wait ends
         self.initialized = False
         self.duplicate_next = tk.BooleanVar(value=False)
-        self.cells = []        # cells[row][col] -> Entry
+        self.cells = []        # cells[row][col] -> Entry (channels 1-3)
+        self.wait_cells = []   # wait_cells[row] -> Entry (seconds)
+        self.type_vars = []    # type_vars[row] -> StringVar ("Pump in", ...)
+        self.type_boxes = []   # type_boxes[row] -> Combobox
         self.row_buttons = []  # row labels (#1, #2, ...)
 
         self._build_header()
@@ -203,6 +229,21 @@ class App(tk.Tk):
         self.current_label.pack(anchor="w")
         self.rotation_label = ttk.Label(left, text="Rotation: 45\u00b0")
         self.rotation_label.pack(anchor="w", pady=(4, 0))
+
+        consts = ttk.Frame(left)
+        consts.pack(anchor="w", pady=(4, 0))
+        self.ch4_var = tk.StringVar(value="0")
+        self.mix_var = tk.StringVar(value="0")
+        entries = []
+        for r, (text, var) in enumerate(
+                [("Ch 4 output volume (ml):", self.ch4_var),
+                 ("Mixing pause (s):", self.mix_var)]):
+            ttk.Label(consts, text=text).grid(row=r, column=0, sticky="w")
+            e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
+            e.grid(row=r, column=1, padx=(6, 0), pady=(0, 2))
+            e.bind("<KeyRelease>", lambda ev: self._update_run_state())
+            entries.append(e)
+        self.ch4_entry, self.mix_entry = entries
 
         right = ttk.Frame(header)
         right.grid(row=0, column=1, sticky="ne")
@@ -250,32 +291,49 @@ class App(tk.Tk):
             "<Configure>", lambda e: self.canvas.itemconfigure(win, width=e.width))
         self._bind_mousewheel()
 
-        ttk.Label(self.grid_frame, text="").grid(row=0, column=0)
-        for c, name in enumerate(COLUMN_HEADERS):
+        # columns: 0 = row label, 1 = type, 2.. = channels, last = wait (s)
+        headers = ["", "Type"] + COLUMN_HEADERS + ["Wait (s)"]
+        wait_col = len(headers) - 1
+        for c, name in enumerate(headers):
             ttk.Label(self.grid_frame, text=name, anchor="center",
                       font=("TkDefaultFont", 10, "bold")).grid(
-                row=0, column=c + 1, sticky="ew", padx=1, pady=1)
-            self.grid_frame.columnconfigure(c + 1, weight=1, uniform="col")
+                row=0, column=c, sticky="ew", padx=1, pady=1)
+            if c >= 2:
+                self.grid_frame.columnconfigure(c, weight=1, uniform="col")
+
+        def make_entry(r, c):
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self._update_run_state())
+            e = tk.Entry(self.grid_frame, justify="center", width=10,
+                         relief="solid", borderwidth=1, textvariable=var)
+            e.var = var   # keep a reference, or Tk drops the trace
+            e.grid(row=r + 1, column=c, sticky="ew", padx=1, pady=1, ipady=3)
+            return e
 
         for r in range(NUM_ROWS):
             lbl = ttk.Label(self.grid_frame, text=f"#{r + 1}", width=6,
                             anchor="w")
             lbl.grid(row=r + 1, column=0, padx=(2, 4), pady=1, sticky="ew")
             self.row_buttons.append(lbl)
+
+            type_var = tk.StringVar(value=STEP_TYPES["in"])
+            box = ttk.Combobox(self.grid_frame, textvariable=type_var,
+                               values=list(STEP_TYPES.values()),
+                               state="readonly", width=9)
+            box.grid(row=r + 1, column=1, sticky="ew", padx=1, pady=1)
+            box.bind("<<ComboboxSelected>>",
+                     lambda ev, i=r: self._on_type_changed(i))
+            self.type_vars.append(type_var)
+            self.type_boxes.append(box)
+
             row_entries = []
             for c in range(len(COLUMN_HEADERS)):
-                var = tk.StringVar()
-                var.trace_add("write", lambda *_: self._update_run_state())
-                e = tk.Entry(self.grid_frame, justify="center", width=10,
-                             relief="solid", borderwidth=1, textvariable=var)
-                e.var = var   # keep a reference, or Tk drops the trace
-                e.bind("<KeyRelease>", lambda ev: self._update_run_state())
+                e = make_entry(r, c + 2)
                 e.bind("<FocusOut>", lambda ev, i=r: self.after_idle(
                     self._normalize_if_left, i))
-                e.grid(row=r + 1, column=c + 1, sticky="ew", padx=1, pady=1,
-                       ipady=3)
                 row_entries.append(e)
             self.cells.append(row_entries)
+            self.wait_cells.append(make_entry(r, wait_col))
 
         side = ttk.Frame(body, padding=(12, 0, 0, 0))
         side.grid(row=1, column=1, sticky="n")
@@ -312,25 +370,47 @@ class App(tk.Tk):
     # ---- helpers -----------------------------------------------------------
     def _refresh_rows(self):
         """Done rows: locked + greyed. Current row: highlighted. Rest: editable.
-        While pumping everything is locked."""
-        for i, (lbl, row) in enumerate(zip(self.row_buttons, self.cells)):
+        Fields that don't apply to a row's type are greyed out. While a step
+        pumps everything is locked; while it only waits (wait step / mixing
+        pause) the upcoming rows stay editable."""
+        for i, lbl in enumerate(self.row_buttons):
             if i < self.current_step:
-                text, bg, editable = f"\u2713 #{i + 1}", "#e0e0e0", False
+                text, bg, editable = f"✓ #{i + 1}", "#e0e0e0", False
             elif i == self.current_step:
-                text, bg, editable = f"\u25b6 #{i + 1}", "#fff6c8", True
+                text, bg, editable = f"▶ #{i + 1}", "#fff6c8", True
             else:
                 text, bg, editable = f"#{i + 1}", "white", True
+            if self.busy and (i == self.current_step or not self.waiting):
+                editable = False
             lbl.configure(text=text)
-            state = "normal" if editable and not self.pumping else "disabled"
-            for e in row:
-                e.configure(state=state, bg=bg, disabledbackground=bg,
+            kind = self._row_type(i)
+            self.type_boxes[i].configure(
+                state="readonly" if editable else "disabled")
+            for e, applies in ([(e, kind == "in") for e in self.cells[i]]
+                               + [(self.wait_cells[i], kind == "wait")]):
+                cell_bg = bg if applies else "#c8c8c8"
+                e.configure(state="normal" if editable and applies else "disabled",
+                            bg=cell_bg, disabledbackground=cell_bg,
                             disabledforeground="#555555")
 
+    def _on_type_changed(self, index):
+        """Clear the fields that don't apply to the row's new type."""
+        kind = self._row_type(index)
+        if kind != "in":
+            for e in self.cells[index]:
+                e.var.set("")
+        if kind != "wait":
+            self.wait_cells[index].var.set("")
+        self._refresh_rows()
+        self._update_run_state()
+
     def _fill_blanks(self, index):
-        """Empty fields in a row become 0.0."""
+        """Empty fields in a pump-in row become 0.0."""
+        if self._row_type(index) != "in":
+            return
         for e in self.cells[index]:
             if str(e.cget("state")) == "normal" and not e.get().strip():
-                e.insert(0, "0.0")
+                e.var.set("0.0")
 
     def _normalize_if_left(self, index):
         if self.focus_get() in self.cells[index]:
@@ -341,42 +421,71 @@ class App(tk.Tk):
     def _update_run_state(self):
         if not hasattr(self, "run_btn"):
             return
-        ok = (self.initialized and not self.pumping
+        ok = (self.initialized and not self.busy
               and self.current_step < NUM_ROWS
               and self._row_is_complete(self.current_step))
         self.run_btn.configure(state="normal" if ok else "disabled")
 
     def _row_is_complete(self, index):
-        """True when every channel field in the row holds a valid number."""
-        for v in self._row_values(index):
-            if not is_number(v):
-                return False
-        return True
+        """True when the row (and the preset constant it uses) is valid."""
+        kind = self._row_type(index)
+        if kind == "in":
+            return (all(is_number(v) for v in self._volume_values(index))
+                    and is_duration(self.mix_var.get()))
+        if kind == "out":
+            return is_number(self.ch4_var.get())
+        return is_duration(self.wait_cells[index].get())
 
     def _step_is_empty(self, index):
-        return not any(v.strip() for v in self._row_values(index))
+        """Only a pump-in row with no volumes counts as empty; pump-out and
+        wait rows are steps as soon as their type is chosen."""
+        return (self._row_type(index) == "in"
+                and not any(v.strip() for v in self._volume_values(index)))
 
     def _load_preset(self, name):
         data = PRESETS[name]
-        for row in self.cells:
-            for e in row:
-                e.delete(0, "end")
-        for r, values in enumerate(data["rows"][:NUM_ROWS]):
-            for c, v in enumerate(values[:len(COLUMN_HEADERS)]):
-                self.cells[r][c].insert(0, v)
+        # Set via the StringVars: Entry.insert/delete ignore disabled fields.
+        for r in range(NUM_ROWS):
+            self.type_vars[r].set(STEP_TYPES["in"])
+            for e in self.cells[r] + [self.wait_cells[r]]:
+                e.var.set("")
+        for r, row in enumerate(data["rows"][:NUM_ROWS]):
+            self.type_vars[r].set(STEP_TYPES[row["type"]])
+            for c, v in enumerate(row.get("volumes", [])[:len(COLUMN_HEADERS)]):
+                self.cells[r][c].var.set(v)
+            self.wait_cells[r].var.set(row.get("seconds", ""))
+        self.ch4_var.set(str(data.get("ch4_volume", "0")))
+        self.mix_var.set(str(data.get("mix_pause", "0")))
         self.current_preset.set(name)
         self.current_step = 0
         self._refresh_rows()
         self.current_label.configure(text=f"Current: {name}")
-        self.rotation_label.configure(text=f"Rotation: {data['rotation']}\u00b0")
+        self.rotation_label.configure(text=f"Rotation: {data['rotation']}°")
 
-    def _row_values(self, index):
+    def _row_type(self, index):
+        return STEP_KEYS[self.type_vars[index].get()]
+
+    def _volume_values(self, index):
         return [e.get() for e in self.cells[index]]
 
-    def _set_header_enabled(self, enabled):
-        self.preset_box.configure(state="readonly" if enabled else "disabled")
-        for w in (self.ok_btn, self.save_btn):
-            w.configure(state="normal" if enabled else "disabled")
+    def _row_data(self, index):
+        """The row as stored in PRESETS."""
+        kind = self._row_type(index)
+        if kind == "in":
+            return {"type": "in", "volumes": self._volume_values(index)}
+        if kind == "wait":
+            return {"type": "wait", "seconds": self.wait_cells[index].get()}
+        return {"type": "out"}
+
+    def _update_header(self):
+        """Preset switching only when idle; the preset constants and Save also
+        while a step is just waiting."""
+        idle = not self.busy
+        editable = idle or self.waiting
+        self.preset_box.configure(state="readonly" if idle else "disabled")
+        self.ok_btn.configure(state="normal" if idle else "disabled")
+        for w in (self.save_btn, self.ch4_entry, self.mix_entry):
+            w.configure(state="normal" if editable else "disabled")
 
     # ---- callbacks ---------------------------------------------------------
     def on_choose_preset(self):
@@ -388,9 +497,19 @@ class App(tk.Tk):
 
     def on_save(self):
         name = self.current_preset.get()
-        PRESETS[name]["rows"] = [v for v in
-                                 (self._row_values(i) for i in range(NUM_ROWS))
-                                 if any(x.strip() for x in v)]
+        if not is_number(self.ch4_var.get()):
+            messagebox.showerror("Invalid value",
+                                 "Ch 4 output volume must be a number.")
+            return
+        if not is_duration(self.mix_var.get()):
+            messagebox.showerror("Invalid value",
+                                 "Mixing pause must be a number of seconds "
+                                 "(0 or more).")
+            return
+        PRESETS[name]["ch4_volume"] = self.ch4_var.get().strip()
+        PRESETS[name]["mix_pause"] = self.mix_var.get().strip()
+        PRESETS[name]["rows"] = [self._row_data(i) for i in range(NUM_ROWS)
+                                 if not self._step_is_empty(i)]
         print(f"[gui] saved changes to {name}")
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 
@@ -420,86 +539,115 @@ class App(tk.Tk):
         if not ARM_MIN_DEG <= degrees <= ARM_MAX_DEG:
             messagebox.showerror(
                 "Invalid rotation",
-                f"Preset {name}: rotation {degrees}\u00b0 is outside "
-                f"{ARM_MIN_DEG}-{ARM_MAX_DEG}\u00b0.")
+                f"Preset {name}: rotation {degrees}° is outside "
+                f"{ARM_MIN_DEG}-{ARM_MAX_DEG}°.")
             return
 
         self.init_btn.configure(state="disabled")
         self.initialized = False
-        self._update_run_state()
-        self._set_header_enabled(False)
+        self._set_busy(True)
         self.status.set("Initializing...")
         self._submit(self._init_hardware(degrees),
                      self._init_done, self._init_failed)
 
     def _init_failed(self, exc):
-        self._set_header_enabled(True)
+        self._set_busy(False)
         self.init_btn.configure(state="normal")
         self.status.set("Initialization failed")
         messagebox.showerror("Initialization failed", str(exc))
 
     def _init_done(self, _result):
-        self._set_header_enabled(True)
         self.current_step = 0
         self.initialized = True
         self.status.set("Ready")
+        self._set_busy(False)
+
+    def _set_busy(self, busy, waiting=False):
+        """Update the busy/waiting state and every widget that depends on it."""
+        self.busy = busy
+        self.waiting = busy and waiting
+        self._update_header()
         self._refresh_rows()
         self._update_run_state()
 
-    # -- run one step through DilutionController ------------------------------
+    # -- run one step: pump in (+ mixing pause), pump out, or wait ------------
     def on_run_step(self):
-        if self._step_is_empty(self.current_step):
-            messagebox.showwarning("Empty step",
-                                   f"Step #{self.current_step + 1} has no values.")
+        i = self.current_step
+        n = i + 1
+        kind = self._row_type(i)
+        if self._step_is_empty(i):
+            messagebox.showwarning("Empty step", f"Step #{n} has no values.")
             return
-        self._fill_blanks(self.current_step)           # empty fields -> 0.0
+        self._fill_blanks(i)                        # empty fields -> 0.0
         try:
-            step = tuple(to_float(v) for v in self._row_values(self.current_step))
+            if kind == "in":
+                step = tuple(to_float(v) for v in self._volume_values(i))
+                step += (0.0,)                      # channel 4 stays off
+                mix_pause = to_float(self.mix_var.get())
+            elif kind == "out":
+                step = (0.0,) * len(COLUMN_HEADERS) + (to_float(self.ch4_var.get()),)
+            else:
+                seconds = to_float(self.wait_cells[i].get())
         except ValueError:
             messagebox.showerror("Invalid value",
-                                 f"Step #{self.current_step + 1} contains a "
-                                 "value that is not a number.")
+                                 f"Step #{n} contains a value that is not "
+                                 "a number.")
             return
         self._duplicate_into_next_row()
-        self._set_header_enabled(False)
-        self.pumping = True
-        self.status.set(f"Pumping step #{self.current_step + 1}...")
-        self._update_run_state()
-        self._refresh_rows()
+
+        if kind == "wait":
+            self._start_wait(f"Step #{n}: waiting...", seconds)
+            return
+        if kind == "in":
+            self.status.set(f"Step #{n}: pumping in (ch 1-3)...")
+            on_pumped = lambda _r: self._start_wait(
+                f"Step #{n}: pumping done, mixing...", mix_pause)
+        else:
+            self.status.set(f"Step #{n}: pumping out (ch 4)...")
+            on_pumped = self._step_done
+        self._set_busy(True)
         self._submit(self.controller.run_step(step),
-                     self._pumping_done, self._pumping_failed)
+                     on_pumped, self._step_failed)
+
+    def _start_wait(self, text, seconds):
+        """Wait `seconds` on the asyncio loop, so the GUI stays usable (the
+        upcoming rows can be edited meanwhile), then finish the step."""
+        self._wait_end = time.monotonic() + seconds
+        self._set_busy(True, waiting=True)
+        self._countdown(text, self._wait_end)
+        self._submit(asyncio.sleep(seconds), self._step_done, self._step_failed)
+
+    def _countdown(self, text, end):
+        if not (self.waiting and self._wait_end == end):
+            return                          # that wait is over
+        left = math.ceil(max(0.0, end - time.monotonic()))
+        self.status.set(f"{text} {left} s left")
+        self.after(200, self._countdown, text, end)
 
     def _duplicate_into_next_row(self):
         """If ticked and the next row is empty, copy the current row into it."""
-        nxt = self.current_step + 1
+        cur, nxt = self.current_step, self.current_step + 1
         if not self.duplicate_next.get() or nxt >= NUM_ROWS:
             return
         if not self._step_is_empty(nxt):
             return                      # never overwrite an existing step
-        for entry, value in zip(self.cells[nxt], self._row_values(self.current_step)):
-            entry.delete(0, "end")
-            entry.insert(0, value)
+        self.type_vars[nxt].set(self.type_vars[cur].get())
+        for entry, value in zip(self.cells[nxt], self._volume_values(cur)):
+            entry.var.set(value)
+        self.wait_cells[nxt].var.set(self.wait_cells[cur].get())
 
-    def _pumping_failed(self, exc):
-        self.pumping = False
-        self._set_header_enabled(True)
+    def _step_failed(self, exc):
         self.status.set("Pump error")
-        self._refresh_rows()
-        self._update_run_state()
+        self._set_busy(False)
         messagebox.showerror("Pump error", str(exc))
 
-    def _pumping_done(self, _result):
-        # run_step returns None, so just report the step number
+    def _step_done(self, _result):
         self.status.set(f"Step #{self.current_step + 1} done")
-        self.pumping = False
         self.current_step += 1              # lock finished row, advance
-        self._set_header_enabled(True)
-        at_end = (self.current_step >= NUM_ROWS
-                  or self._step_is_empty(self.current_step))
-        self._refresh_rows()
-        if at_end:
+        self._set_busy(False)
+        if (self.current_step >= NUM_ROWS
+                or self._step_is_empty(self.current_step)):
             self.init_btn.configure(state="normal")
-        self._update_run_state()
 
     def on_exit(self):
         self.arm.close()

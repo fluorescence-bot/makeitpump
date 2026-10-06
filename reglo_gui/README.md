@@ -30,7 +30,8 @@ The settings are constants at the top of `reglo_gui.py`:
 | `DEBUGGING` | `True` uses the mock pump and a mock arm, so no hardware is needed. Set it to `False` to drive the real devices. |
 | `PUMP_ADDRESS` | Serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`. |
 | `SERIAL_PORT`, `SERIAL_BAUD` | Serial port and baud rate of the rotator arm. This must be a different port from the pump. |
-| `PRESETS` | The built-in presets. |
+| `DB_PATH` | The preset database, `presets.db` next to `reglo_gui.py` by default. |
+| `DEFAULT_PRESETS` | The example presets put into a new, empty database. |
 
 The rotator arm's serial protocol is described in
 [`firmware/cuvette_rotator/`](../firmware/cuvette_rotator/).
@@ -69,13 +70,22 @@ The rotator arm's serial protocol is described in
    Finished steps are ticked and greyed out. During a wait, or the mixing
    pause, you can still edit the steps that come next.
 
-**Save changes** stores the preset, but only in memory: changes are lost when
-the program closes until presets are stored in a database (see the
-milestones).
+## Presets database
+
+Presets are stored in an SQLite database, `presets.db`. **Save changes** and
+renaming write to it immediately, so presets are kept when the program
+closes. The first time the program runs, it creates the database and fills
+it with the example presets. To start over from the examples, close the
+program and delete `presets.db`. The file is not tracked by git.
+
+The database has two tables: `presets` (one row per preset with its
+settings) and `steps` (the steps of each preset, in order). Values are stored
+as the text that was typed, so they load back exactly as entered.
 
 ## Files
 
-- `reglo_gui.py`: the GUI, the arm controller and the presets.
+- `reglo_gui.py`: the GUI, the arm controller and the default presets.
+- `preset_store.py`: reads and writes presets in the SQLite database.
 - `dilution_controller.py`: turns a step into pump commands for the
   `ismatec` library.
 - `mock_gui.py`: an old command-line test script. It is out of date and no
@@ -88,7 +98,7 @@ milestones).
   a channel loses its count of how much it has pumped. Resuming would have to
   estimate the delivered volume (flow rate × running time) and restart each
   channel with the remaining volume.
-- [ ] **Store presets in SQLite.**
+- [x] **Store presets in SQLite.**
 - [ ] **Sessions**: a session runs from Initialize until the session ends.
 - [ ] **Log each step of a session.**
   - [ ] Store the logs in SQLite.

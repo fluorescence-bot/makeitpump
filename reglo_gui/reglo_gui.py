@@ -4,15 +4,18 @@ import asyncio
 import logging
 import math
 import re
+import sqlite3
 import threading
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, messagebox
 from tkinter import font as tkfont
 
 import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
+from preset_store import PresetStore
 
 DEBUGGING = True
 
@@ -66,7 +69,13 @@ ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
 ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
                           # None = any non-empty line counts as "done".
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
-PRESETS = {                              # stub data; replace with file/db later
+# ---- Presets -------------------------------------------------------------------
+# Stored in an SQLite database next to this file. DEFAULT_PRESETS only seed an
+# empty database (the first run); PRESETS is the in-memory copy, loaded from
+# the database at startup and written through to it on Save and rename.
+DB_PATH = Path(__file__).with_name("presets.db")
+PRESETS = {}
+DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
                 "measure_pause": "30",
                 "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
@@ -210,8 +219,10 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_exit)
         self.bind_all("<Button-1>", self._on_click_anywhere, add="+")
 
-        self.current_preset = tk.StringVar(value="preset1")
-        self.chosen_preset = tk.StringVar(value="preset1")
+        self.store = self._open_store()
+        first = next(iter(PRESETS))
+        self.current_preset = tk.StringVar(value=first)
+        self.chosen_preset = tk.StringVar(value=first)
         self.rotation = tk.StringVar(value="45")
         self.status = tk.StringVar(value="Not initialized")
         self.current_step = 0   # row that will run next; rows above are done
@@ -234,8 +245,23 @@ class App(tk.Tk):
         self._build_header()
         self._build_steps()
         self._build_footer()
-        self._load_preset("preset1")
+        self._load_preset(first)
         self._refresh_rows()
+
+    def _open_store(self):
+        """Open the preset database (seeding it on first run) and load all
+        presets into PRESETS. Exits with a message if that fails."""
+        try:
+            store = PresetStore(DB_PATH)
+            if store.is_empty():
+                store.seed(DEFAULT_PRESETS)
+            PRESETS.clear()
+            PRESETS.update(store.load_all())
+        except sqlite3.Error as exc:
+            messagebox.showerror("Preset database",
+                                 f"Could not open {DB_PATH}:\n{exc}")
+            raise SystemExit(1)
+        return store
 
     # ---- async bridge ------------------------------------------------------
     def _submit(self, coro, on_ok, on_err):
@@ -360,7 +386,7 @@ class App(tk.Tk):
                   font=self.font_small_bold).pack(anchor="w")
         title_row = ttk.Frame(left, style="Plain.Card.TFrame")
         title_row.pack(anchor="w", pady=(0, 8))
-        self.current_label = ttk.Label(title_row, text="preset1",
+        self.current_label = ttk.Label(title_row, text="",
                                        style="Title.Card.TLabel")
         self.current_label.pack(side="left")
         self.rename_btn = ttk.Button(title_row, text=RENAME, width=3,
@@ -884,6 +910,12 @@ class App(tk.Tk):
         new = self._ask_preset_name(old)
         if new is None or new == old:
             return                          # cancelled or unchanged
+        try:
+            self.store.rename(old, new)
+        except sqlite3.Error as exc:
+            messagebox.showerror("Rename preset",
+                                 f"Could not rename the preset:\n{exc}")
+            return
         # Rebuild in place to keep the presets' order in the drop-down.
         items = [(new if k == old else k, v) for k, v in PRESETS.items()]
         PRESETS.clear()
@@ -915,13 +947,20 @@ class App(tk.Tk):
                                  "Measurement pause must be a number of "
                                  "seconds (0 or more).")
             return
-        PRESETS[name]["rotation"] = degrees
-        PRESETS[name]["ch4_volume"] = self.ch4_var.get().strip()
-        PRESETS[name]["mix_pause"] = self.mix_var.get().strip()
-        PRESETS[name]["measure_pause"] = self.measure_var.get().strip()
-        PRESETS[name]["rows"] = [self._row_data(i)
-                                 for i in range(self._num_steps())
-                                 if not self._step_is_empty(i)]
+        preset = {
+            "rotation": degrees,
+            "ch4_volume": self.ch4_var.get().strip(),
+            "mix_pause": self.mix_var.get().strip(),
+            "measure_pause": self.measure_var.get().strip(),
+            "rows": [self._row_data(i) for i in range(self._num_steps())
+                     if not self._step_is_empty(i)]}
+        try:
+            self.store.save(name, preset)
+        except sqlite3.Error as exc:
+            messagebox.showerror("Save failed",
+                                 f"Could not save {name}:\n{exc}")
+            return
+        PRESETS[name] = preset
         for c in self.consts.values():
             c["locked"] = True
         self._refresh_consts()
@@ -1139,6 +1178,7 @@ class App(tk.Tk):
 
     def on_exit(self):
         self.arm.close()
+        self.store.close()
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.destroy()
 

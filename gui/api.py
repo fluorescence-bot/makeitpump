@@ -6,6 +6,7 @@ Manages program execution on a daemon thread with pause/resume/stop support.
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -119,6 +120,7 @@ class Api:
                     break
 
                 for block_idx, block in enumerate(blocks):
+                    self._wait_if_paused()
                     if self._stop_event.is_set():
                         break
 
@@ -159,61 +161,39 @@ class Api:
                 self._emit_event({"type": "pumped", "channel": ch, "ml": delivered, "source": source})
 
     def _run_pump_block(self, pumps: Dict[str, Any], source: str) -> None:
-        """Run several channels at once. Each channel pumps its own mL at its own
-        speed; the block ends when the longest channel is done. Checks
-        pause/stop every 50 ms. Emits a `pumped` event per channel with the
-        volume actually delivered, tagged with `source`."""
+        """Pump every active channel at once with `hardware.run_step`, which
+        blocks until the whole block is done. The pump runs at its own rate (the
+        DilutionController uses 90 % of max flow), so `speed` only feeds the
+        time estimate. A block can't be paused (Pause takes effect at the next
+        block); Stop cuts it short via `hardware.stop_all`. Emits a `pumped`
+        event per channel, tagged with `source`."""
         jobs: Dict[str, "tuple[float, float, float]"] = {}  # ch -> (ml, speed, seconds)
         for ch, p in pumps.items():
             ml, speed = float(p.get("ml", 0) or 0), float(p.get("speed", 0) or 0)
             if ml > 0 and speed > 0:
                 jobs[ch] = (ml, speed, pump_seconds(ml, speed))
-        if not jobs:
+        if not jobs or self._stop_event.is_set():
             return
-        duration = max(s for _, _, s in jobs.values())
-        running: set = set()
-
-        def start(ch: str, elapsed: float) -> None:
-            ml, speed, s = jobs[ch]
-            hardware.start_pump(ch, ml * (s - elapsed) / s, speed)
-            running.add(ch)
-
-        for ch in jobs:
-            start(ch, 0.0)
-
-        elapsed, last, paused = 0.0, time.monotonic(), False
-        while elapsed < duration:
-            if self._stop_event.is_set():
-                for ch in running:
-                    hardware.stop_pump(ch)
-                self._emit_pumped(jobs, elapsed, source)
-                return
-            if self._pause_event.is_set() and not paused:
-                for ch in running:
-                    hardware.stop_pump(ch)
-                running.clear()
-                paused = True
-                self._emit_event({"type": "status", "status": "paused"})
-            if paused:
-                if not self._resume_event.is_set():
-                    time.sleep(0.05)
-                    continue
-                self._resume_event.clear()
-                paused = False
-                self._emit_event({"type": "status", "status": self._active_status})
-                for ch, (_, _, s) in jobs.items():
-                    if s > elapsed:
-                        start(ch, elapsed)
-                last = time.monotonic()
-            elapsed, last = self._wait_step(elapsed, last)
-            for ch in list(running):
-                if elapsed >= jobs[ch][2]:
-                    hardware.stop_pump(ch)
-                    running.discard(ch)
-
-        for ch in running:
-            hardware.stop_pump(ch)
+        start = time.monotonic()
+        hardware.run_step({ch: ml for ch, (ml, _, _) in jobs.items()})
+        # Stopped: estimate what was delivered from the time it ran.
+        elapsed = time.monotonic() - start if self._stop_event.is_set() else math.inf
         self._emit_pumped(jobs, elapsed, source)
+
+    def _wait_if_paused(self) -> None:
+        """Pause between blocks: blocks that can't pause themselves (pump,
+        rotate) leave a pause request for here. Returns at once if not paused,
+        or when resumed or stopped."""
+        if not self._pause_event.is_set():
+            self._resume_event.clear()  # a pause+resume during the block is moot
+            return
+        self._emit_event({"type": "status", "status": "paused"})
+        while not self._resume_event.is_set():
+            if self._stop_event.is_set():
+                return
+            time.sleep(0.05)
+        self._resume_event.clear()
+        self._emit_event({"type": "status", "status": self._active_status})
 
     def _run_pause_block(self, s: float) -> None:
         """Wait s seconds (not counting time spent paused), checking pause/stop."""

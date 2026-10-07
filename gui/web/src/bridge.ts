@@ -218,6 +218,7 @@ class MockBackend implements BackendApi {
     try {
       for (let r = 0; r < repeat; r++) {
         for (let i = 0; i < blocks.length; i++) {
+          await this.waitIfPaused();
           if (!this.running) break;
 
           const block = blocks[i];
@@ -267,30 +268,30 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
-  // Mirrors Api._run_pump_block: waits for the slowest channel (not counting paused
-  // time), then emits one `pumped` event per channel with the mL actually delivered.
+  // Mirrors Api._wait_if_paused: blocks that can't pause (pump, rotate) leave a
+  // pause request for here, between blocks.
+  private async waitIfPaused(): Promise<void> {
+    if (!this.paused) return;
+    emitEvent({ type: "status", status: "paused" });
+    while (this.paused && this.running) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    if (this.running) emitEvent({ type: "status", status: this.activeStatus });
+  }
+
+  // Mirrors Api._run_pump_block: waits for the slowest channel and can't be
+  // paused, then emits one `pumped` event per channel with the mL delivered.
   private async runPumpBlock(pumps: Partial<Record<Channel, ChannelPump>>, source: PumpSource): Promise<void> {
     const jobs = (Object.keys(pumps) as Channel[])
       .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumpSeconds(pumps[ch]!.ml, pumps[ch]!.speed) }))
       .filter((j) => j.s > 0);
-    if (!jobs.length) return;
+    if (!jobs.length || !this.running) return;
     const duration = Math.max(...jobs.map((j) => j.s)) * 1000;
-    let start = Date.now();
+    const start = Date.now();
     while (this.running && Date.now() - start < duration) {
-      if (this.paused) {
-        this.pausedAt = Date.now();
-        emitEvent({ type: "status", status: "paused" });
-        while (this.paused && this.running) {
-          await new Promise(r => setTimeout(r, 50));
-        }
-        // Shift the start time to account for pause duration
-        start += Date.now() - this.pausedAt;
-        if (!this.running) break;
-        emitEvent({ type: "status", status: this.activeStatus });
-      }
       await new Promise(r => setTimeout(r, 50));
     }
-    const elapsed = (Date.now() - start) / 1000;
+    const elapsed = this.running ? Infinity : (Date.now() - start) / 1000;
     for (const j of jobs) {
       const ml = elapsed >= j.s ? j.ml : (j.ml * elapsed) / j.s;
       if (ml > 0) emitEvent({ type: "pumped", channel: j.ch, ml, source });

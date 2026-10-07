@@ -147,39 +147,41 @@ describe("bridge mock", () => {
   });
 
   describe("pause and resume", () => {
-    it("emits paused status", async () => {
-      await runWithEvents(async () => {
+    it("pauses after the pump block, not during it", async () => {
+      const testEvents: BackendEvent[] = [];
+      onEvent((e) => testEvents.push(e));
+      const statuses = () =>
+        testEvents.filter((e) => e.type === "status").map((e) => (e as { status: string }).status);
+      {
         const api = await getApi();
 
+        const idle = { ml: 0, speed: 0 };
         const blocks: Block[] = [
-          {
-            id: "b1",
-            type: "pump",
-            pumps: {
-              A: { ml: 3, speed: 10 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
-            },
-          },
+          { id: "b1", type: "pump", pumps: { A: { ml: 3, speed: 10 }, B: idle, C: idle, D: idle } }, // 0.3 s
+          { id: "b2", type: "pump", pumps: { A: idle, B: { ml: 1, speed: 10 }, C: idle, D: idle } }, // 0.1 s
         ];
 
         const promise = api.run_program(blocks, 1);
 
-        // Wait a bit, then pause
+        // Pause during the first block: it keeps pumping
         await new Promise((r) => setTimeout(r, 50));
         const pauseResult = await api.pause_run();
         expect(pauseResult.ok).toBe(true);
+        await new Promise((r) => setTimeout(r, 100));
+        expect(statuses()).not.toContain("paused");
 
-        // Check for paused status
-        await new Promise((r) => setTimeout(r, 50));
+        // After the block ends, the run is paused before block 2
+        await new Promise((r) => setTimeout(r, 300));
+        expect(statuses()).toContain("paused");
+        expect(testEvents.filter((e) => e.type === "block_start")).toHaveLength(1);
 
-        // Resume
         const resumeResult = await api.resume_run();
         expect(resumeResult.ok).toBe(true);
-
         await promise;
-      });
+      }
+
+      expect(statuses()).toEqual(["raining", "paused", "raining", "done"]);
+      expect(testEvents.filter((e) => e.type === "pumped")).toHaveLength(2);
     });
   });
 

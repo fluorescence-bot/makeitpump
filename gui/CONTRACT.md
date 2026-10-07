@@ -110,11 +110,11 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 
 ## Runner semantics (Python and mock must match)
 - `run_program`: rejects if something is already running. Sets status `raining`. For r in 0..repeat-1 and each block i, it emits `block_start`, runs it, then emits `block_end` and `progress`. When finished it sets status `done`.
-- A pump block starts every active channel simultaneously via `hardware.start_pump(channel, ml, speed)`, stops each channel when its own time has elapsed, and ends when the slowest channel is done. It checks stop/pause every 50 ms.
-- A pause block waits `s` seconds, checking stop/pause the same way.
-- Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining mL at the same speed (re-emitting `block_start` with the remaining block values is fine).
-- Stop: `hardware.stop_all()`, status `stopped`.
-- Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `s` is that channel's time and `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
+- A pump block hands the mL of every active channel to `hardware.run_step`, which runs Andreas' `DilutionController` and blocks until the pump reports every channel done. The pump runs at its own rate (90 % of its max flow), so `speed` only feeds the time estimates (`pumpSeconds`); the mock waits for the slowest channel's estimated time.
+- A pause block waits `s` seconds, checking stop/pause every 50 ms.
+- **A pump block can't be paused** (the pump has no pause, and stopping a channel loses its count). Pause takes effect before the next block: set status `paused`, wait; Resume sets the active status again and runs the next block. A pause during a pause block takes effect at once, and that block resumes with its remaining time. Pausing and resuming before the block ends doesn't pause anything; pausing during the last block lets the run finish with `done`.
+- Stop: `hardware.stop_all()` (cancels the step and stops every channel), status `stopped`.
+- Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. A finished block reports the full `ml`. A stopped block reports an estimate, `ml * min(elapsed, s) / s`, where `s` is that channel's estimated time and `elapsed` the time the block ran. `source` is `program` or `manual`.
 - `manual_dose(channel, ml, speed)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
 ## Cuvette rotator
@@ -127,15 +127,16 @@ A robot turns the cuvette (the "final solution" mug in the scene) to an absolute
 - `manual_rotate(deg)`: like `manual_dose`, on the runner thread: status `rotating`, then **re-home first** (`rotator` `homing`, `HOME` to the 0° switch) so every click starts from a grounded zero, then the move, then status `ready`. Rotate blocks in a program don't re-home. The UI disables Pause while `rotating`.
 - The mock fakes a rotator that connects and homes in 1.5 s, then moves at `rotate.sPerDeg` (`flow.ts`, measured ≈ 0.03 s/°).
 
-## hardware.py (stubs for the backend team)
+## hardware.py (pump control)
 ```python
-MAX_FLOW_ML_PER_S = 1.0   # flow at speed 100 %, placeholder until calibrated
+DEBUGGING = True          # True: the `ismatec` library's mock pump; False: the real pump
+PUMP_ADDRESS = "/dev/ttyACM0"
+MAX_FLOW_ML_PER_S = 1.0   # flow at speed 100 %, placeholder until calibrated (estimates only)
 
-def start_pump(channel: str, ml: float, speed: float) -> None: ...   # non-blocking start, speed 0-100 %
-def stop_pump(channel: str) -> None: ...
-def stop_all() -> None: ...
+def run_step(volumes: dict[str, float]) -> None: ...   # mL per channel A-D; blocks until done or stopped
+def stop_all() -> None: ...                            # cancel the step and stop every channel; doesn't wait
 ```
-Each stub just prints what it would do.
+Set up like `reglo_gui/reglo_gui.py`: the `ismatec` Pump and `DilutionController` (`dilution_controller.py`, a copy of `reglo_gui/`'s) live on an asyncio loop in a background thread, created and `setup()` on the first step. Channels A/B/C/D are pump channels 1/2/3/4. The mock pump runs one channel at a time and can't be interrupted, so with `DEBUGGING` a stopped channel still finishes in the background.
 
 ## scene.ts exports
 ```ts

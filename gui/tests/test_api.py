@@ -78,29 +78,29 @@ def test_run_rejects_invalid_speed(api_instance, mock_hardware):
     blocks = [{"id": "b1", "type": "pump", "pumps": {"A": {"ml": 1, "speed": 150}}}]
     result = api_instance.run_program(blocks, 1)
     assert result == {"ok": False, "error": "A: speed must be 0-100"}
-    assert mock_hardware["start_pump"] == []
+    assert mock_hardware["run_step"] == []
+
+
+FAKE_PUMP_ML_PER_S = 10.0  # the fake pump's own rate (like the real one, it ignores speed)
 
 
 @pytest.fixture
 def mock_hardware(monkeypatch):
-    """Fixture to mock and spy on hardware calls."""
-    calls = {
-        "start_pump": [],
-        "stop_pump": [],
-        "stop_all": [],
-    }
+    """Fixture to mock and spy on hardware calls. The fake `run_step` blocks
+    until its largest volume is pumped at FAKE_PUMP_ML_PER_S, or `stop_all`."""
+    calls = {"run_step": [], "stop_all": []}
+    stopped = threading.Event()
 
-    def fake_start_pump(channel: str, ml: float, speed: float) -> None:
-        calls["start_pump"].append((channel, ml, speed))
-
-    def fake_stop_pump(channel: str) -> None:
-        calls["stop_pump"].append(channel)
+    def fake_run_step(volumes: Dict[str, float]) -> None:
+        calls["run_step"].append(dict(volumes))
+        stopped.clear()
+        stopped.wait(max(volumes.values()) / FAKE_PUMP_ML_PER_S)
 
     def fake_stop_all() -> None:
         calls["stop_all"].append(None)
+        stopped.set()
 
-    monkeypatch.setattr(hardware, "start_pump", fake_start_pump)
-    monkeypatch.setattr(hardware, "stop_pump", fake_stop_pump)
+    monkeypatch.setattr(hardware, "run_step", fake_run_step)
     monkeypatch.setattr(hardware, "stop_all", fake_stop_all)
 
     return calls
@@ -172,20 +172,8 @@ class TestPumpBlock:
         final_events = [e for e in events if e["type"] == "status" and e["status"] == "done"]
         assert len(final_events) == 1
 
-        # Verify hardware calls: only A and B should start (ml > 0 and speed > 0)
-        starts = mock_hardware["start_pump"]
-        assert len(starts) == 2
-        channels_started = {ch for ch, _, _ in starts}
-        assert channels_started == {"A", "B"}
-
-        # Check that channel C and D are never started
-        assert not any(ch == "C" for ch, _, _ in starts)
-        assert not any(ch == "D" for ch, _, _ in starts)
-
-        # Both channels should be stopped
-        stops = mock_hardware["stop_pump"]
-        assert len(stops) == 2
-        assert set(stops) == {"A", "B"}
+        # One step with only A and B (ml > 0 and speed > 0)
+        assert mock_hardware["run_step"] == [{"A": 9, "B": 5}]
 
     def test_pump_block_idle_channels_dont_start(self, api_instance, mock_hardware):
         """Channels with no mL (or speed 0) should not start pumps."""
@@ -205,13 +193,11 @@ class TestPumpBlock:
         assert result["ok"] is True
         assert wait_for_thread(api_instance._runner_thread)
 
-        # Only B should have started
-        starts = mock_hardware["start_pump"]
-        assert len(starts) == 1
-        assert starts[0][0] == "B"
+        # Only B should be pumped
+        assert mock_hardware["run_step"] == [{"B": 5}]
 
     def test_pump_block_duration(self, api_instance, fake_window, mock_hardware):
-        """Test that pump block duration is the longest channel's time."""
+        """The block lasts until the pump has done every channel."""
         start_time = time.time()
         blocks = [
             {
@@ -332,108 +318,65 @@ class TestStop:
 class TestPauseResume:
     """Tests for pause and resume functionality."""
 
-    def test_pause_resume_pump(self, api_instance, fake_window, mock_hardware):
-        """Test pause and resume with multi-channel pump."""
-        blocks = [
-            {
-                "id": "b1",
-                "type": "pump",
-                "pumps": {
-                    "A": {"ml": 10, "speed": 25},
-                    "B": {"ml": 5, "speed": 25},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
-                },
-            }
-        ]
+    TWO_BLOCKS = [
+        {"id": "b1", "type": "pump", "pumps": {"A": {"ml": 4, "speed": 25}}},  # 0.4 s
+        {"id": "b2", "type": "pump", "pumps": {"B": {"ml": 1, "speed": 25}}},  # 0.1 s
+    ]
 
-        # Start run (don't await, as we need to pause mid-run)
-        result = api_instance.run_program(blocks, 1)
-        assert result["ok"] is True
-
-        time.sleep(0.05)
-
-        # Pause
-        pause_result = api_instance.pause_run()
-        assert pause_result["ok"] is True
-
-        # Verify paused status was emitted
-        assert wait_for_status(fake_window, "paused")
-
+    def test_pause_waits_for_block_end(self, api_instance, fake_window, mock_hardware):
+        """A pump block can't pause: the pause takes effect before the next block."""
+        assert api_instance.run_program(self.TWO_BLOCKS, 1)["ok"] is True
         time.sleep(0.1)
 
-        # Resume
-        resume_result = api_instance.resume_run()
-        assert resume_result["ok"] is True
+        assert api_instance.pause_run()["ok"] is True
+        # The first block keeps pumping; no pause yet
+        assert not wait_for_status(fake_window, "paused", timeout=0.15)
+        assert wait_for_status(fake_window, "paused", timeout=1.0)
+        assert mock_hardware["run_step"] == [{"A": 4}]
+        assert [e["index"] for e in fake_window.events if e["type"] == "block_end"] == [0]
 
-        # Wait for run to complete
+        time.sleep(0.1)
+        assert mock_hardware["run_step"] == [{"A": 4}]
+        assert api_instance.resume_run()["ok"] is True
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
 
-        # Verify that pause/resume happened
-        starts = mock_hardware["start_pump"]
-        stops = mock_hardware["stop_pump"]
-        # Should have at least 2 starts and 2 stops (one per active channel)
-        assert len(starts) >= 2
-        assert len(stops) >= 2
+        assert mock_hardware["run_step"] == [{"A": 4}, {"B": 1}]
+        statuses = [e["status"] for e in fake_window.events if e["type"] == "status"]
+        assert statuses == ["raining", "paused", "raining", "done"]
 
-        # Should have both pause and resume
-        assert any(e["type"] == "status" and e["status"] == "paused" for e in fake_window.events)
-
-    def test_pause_resume_respects_remaining_time(self, api_instance, fake_window, mock_hardware):
-        """Test that resume pumps only the remaining mL, at the same speed."""
-        blocks = [
-            {
-                "id": "b1",
-                "type": "pump",
-                "pumps": {
-                    "A": {"ml": 9, "speed": 30},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
-                },
-            }
-        ]
-
-        result = api_instance.run_program(blocks, 1)
-        assert result["ok"] is True
-
-        # Let it run for ~0.1s
+    def test_pause_and_resume_within_block_is_moot(self, api_instance, fake_window, mock_hardware):
+        """Pausing and resuming before the block ends doesn't pause anything."""
+        api_instance.run_program(self.TWO_BLOCKS, 1)
         time.sleep(0.1)
-
-        # Pause
         api_instance.pause_run()
-        time.sleep(0.05)
-
-        # Get start call before resume
-        starts_before = mock_hardware["start_pump"].copy()
-
-        # Resume
         api_instance.resume_run()
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
 
-        # The resumed pump call delivers less than the original, at the same speed
-        assert len(starts_before) == 1
-        original_ch, original_ml, original_speed = starts_before[0]
-        resumed_calls = mock_hardware["start_pump"][len(starts_before) :]
-        assert len(resumed_calls) == 1
-        resumed_ch, resumed_ml, resumed_speed = resumed_calls[0]
+        statuses = [e["status"] for e in fake_window.events if e["type"] == "status"]
+        assert statuses == ["raining", "done"]
+        assert not api_instance._resume_event.is_set()
 
-        assert resumed_ch == original_ch
-        assert 0 < resumed_ml < original_ml
-        assert resumed_speed == original_speed
+    def test_stop_while_paused(self, api_instance, fake_window, mock_hardware):
+        """Stop during a pause between blocks ends the run without pumping more."""
+        api_instance.run_program(self.TWO_BLOCKS, 1)
+        time.sleep(0.1)
+        api_instance.pause_run()
+        assert wait_for_status(fake_window, "paused", timeout=1.0)
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+        assert mock_hardware["run_step"] == [{"A": 4}]
 
 
 class TestManualDose:
     """Tests for manual dosing (one click = fixed mL)."""
 
     def test_dose_pumps_fixed_amount(self, api_instance, fake_window, mock_hardware):
-        """A dose starts the pump with the given mL and speed and reports the full mL."""
+        """A dose pumps the given mL on its channel and reports the full mL."""
         result = api_instance.manual_dose("A", 2.5, 25)
         assert result["ok"] is True
         assert wait_for_thread(api_instance._runner_thread)
 
-        assert mock_hardware["start_pump"] == [("A", 2.5, 25)]
-        assert mock_hardware["stop_pump"] == ["A"]
+        assert mock_hardware["run_step"] == [{"A": 2.5}]
 
         assert fake_window.events[0] == {"type": "status", "status": "dosing"}
         assert {"type": "dose_start", "channel": "A", "ml": 2.5, "speed": 25} in fake_window.events
@@ -507,7 +450,7 @@ class TestManualDose:
     def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml, speed):
         """Zero or negative mL, and speed outside (0, 100], are refused without touching the pump."""
         assert api_instance.manual_dose("A", ml, speed)["ok"] is False
-        assert mock_hardware["start_pump"] == []
+        assert mock_hardware["run_step"] == []
 
 
 class TestPumpedEvents:

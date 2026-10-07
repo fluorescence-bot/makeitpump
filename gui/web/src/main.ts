@@ -310,9 +310,9 @@ async function init(): Promise<void> {
     statusPill.title = message;
   }
 
-  // Manual dosing: each click pumps that channel's mL-per-click at its speed; the backend reports what was delivered
-  scene.onDose(async (ch: Channel, ml: number, speed: number) => {
-    const result = await api.manual_dose(ch, ml, speed);
+  // Manual dosing: each click pumps that channel's mL-per-click; the backend reports what was delivered
+  scene.onDose(async (ch: Channel, ml: number) => {
+    const result = await api.manual_dose(ch, ml);
     if (!result.ok) {
       // e.g. still busy with the previous click; this click is not pumped or logged
       showStatusError(result.error || "Busy");
@@ -430,7 +430,7 @@ async function init(): Promise<void> {
         const channels: Channel[] = ["A", "B", "C", "D"];
         channels.forEach((ch) => {
           const pump = block.pumps[ch];
-          const s = pump ? pumpSeconds(pump.ml, pump.speed) : 0;
+          const s = pump ? pumpSeconds(pump.ml) : 0;
           if (s > 0) {
             if (ch === "D") {
               scene.startPour(pump.ml, s);
@@ -445,7 +445,7 @@ async function init(): Promise<void> {
     } else if (event.type === "progress") {
       progressFill.style.width = `${event.fraction * 100}%`;
     } else if (event.type === "dose_start") {
-      const s = pumpSeconds(event.ml, event.speed);
+      const s = pumpSeconds(event.ml);
       if (event.channel === "D") scene.startPour(event.ml, s);
       else scene.startRain(event.channel, event.ml, s);
     } else if (event.type === "pumped") {

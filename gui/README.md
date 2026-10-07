@@ -97,20 +97,19 @@ Settings at the top of `hardware.py`:
   hardware is needed. Set it to `False` to drive the real pump.
 - `PUMP_ADDRESS` - serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`
   (not the cuvette rotator's port).
-- `MAX_FLOW_ML_PER_S` - flow at speed 100 %, only used to estimate dose times
-  (placeholder; keep in sync with `web/src/flow.ts`).
+- `FLOW_ML_PER_S` - estimated flow per channel, only used to estimate dose
+  times (placeholder; keep in sync with `web/src/flow.ts`).
 
-The pump runs every step at 90 % of its max flow, so the speed set in the UI
-doesn't change the flow, and a pump block can't be paused: Pause takes effect
-before the next block.
+The pump runs every step at 90 % of its max flow, so pump blocks and doses are
+set in mL only. A pump block can't be paused: Pause takes effect before the
+next block.
 
 We ended up running the electronics with an Adafruit M0 Express.
 
 ## Manual Dosing & Session Totals
 
-The control bar sets a pump speed (0-100 %) shared by manual doses. Clicking
-a cloud (A/B/C) or the bowl (D) in the scene doses a fixed mL amount at that
-speed on the runner thread — doses are refused while the runner is busy and
+Clicking a cloud (A/B/C) or the bowl (D) in the scene doses that channel's
+"mL/click" amount on the runner thread — doses are refused while the runner is busy and
 can be stopped mid-way. Every pump (manual or from a program block) emits a
 `pumped` event with the mL actually delivered, which the frontend accumulates
 into a per-channel (A-D) session log shown in the scene, with reset and

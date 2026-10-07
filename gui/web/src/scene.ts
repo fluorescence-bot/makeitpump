@@ -1,5 +1,5 @@
 import type { Channel, RotatorState, SourceChannel } from "./types";
-import { DEFAULT_SPEED, ROTATE_MAX_DEG, rotate } from "./flow";
+import { ROTATE_MAX_DEG, rotate } from "./flow";
 import "./scene.css";
 
 export interface Scene {
@@ -9,7 +9,7 @@ export interface Scene {
   startPour(ml: number, s: number): void;
   setPaused(paused: boolean): void;
   stopAll(): void;
-  onDose(cb: (ch: Channel, ml: number, speed: number) => void): void;
+  onDose(cb: (ch: Channel, ml: number) => void): void;
   setTotals(totals: Record<Channel, number>): void;
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
@@ -62,10 +62,9 @@ export function createScene(container: HTMLElement): Scene {
   let paused = false;
 
   const nameChangeCallbacks: ((ch: Channel, name: string) => void)[] = [];
-  const doseCallbacks: ((ch: Channel, ml: number, speed: number) => void)[] = [];
-  // mL pumped by one click and the speed (0-100 %) it pumps at, per channel (edited in the scene)
+  const doseCallbacks: ((ch: Channel, ml: number) => void)[] = [];
+  // mL pumped by one click, per channel (edited in the scene)
   const doseMl: Record<Channel, number> = { A: 1, B: 1, C: 1, D: 1 };
-  const doseSpeed: Record<Channel, number> = { A: DEFAULT_SPEED, B: DEFAULT_SPEED, C: DEFAULT_SPEED, D: DEFAULT_SPEED };
   const names: Record<Channel, string> = { A: "A", B: "B", C: "C", D: "D" };
 
   // Create a stage wrapper for the SVG and inputs overlay
@@ -607,13 +606,13 @@ export function createScene(container: HTMLElement): Scene {
     return wrap;
   };
 
-  // "mL per click" and "speed %" fields just left of each cloud and the funnel (svgX = their right edge)
+  // "mL per click" field just left of each cloud and the funnel (svgX = their right edge)
   const createDoseInput = (ch: Channel, svgX: number, svgY: number) => {
     const foreignObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
     foreignObj.setAttribute("x", (svgX - 64).toString());
-    foreignObj.setAttribute("y", (svgY - 44).toString());
+    foreignObj.setAttribute("y", (svgY - 22).toString());
     foreignObj.setAttribute("width", "64");
-    foreignObj.setAttribute("height", "88");
+    foreignObj.setAttribute("height", "44");
     foreignObj.setAttribute("overflow", "visible");
 
     const stack = document.createElement("div");
@@ -627,16 +626,6 @@ export function createScene(container: HTMLElement): Scene {
         set: (v) => {
           if (v > 0) doseMl[ch] = v;
           renderDoseHint(ch);
-        },
-      }),
-      createDoseField(ch, {
-        title: `Pump speed for a click on ${ch} (% of max flow)`,
-        unit: "speed %",
-        step: "5",
-        max: "100",
-        get: () => doseSpeed[ch],
-        set: (v) => {
-          if (v > 0 && v <= 100) doseSpeed[ch] = v;
         },
       })
     );
@@ -876,7 +865,7 @@ export function createScene(container: HTMLElement): Scene {
   // A click on a cloud or the bowl asks for one manual dose on that channel
   const handleDoseClick = (ch: Channel, e: MouseEvent) => {
     if ((e.target as HTMLElement).closest(".rm-name-input")) return; // Don't trigger if clicking on input
-    doseCallbacks.forEach((cb) => cb(ch, doseMl[ch], doseSpeed[ch]));
+    doseCallbacks.forEach((cb) => cb(ch, doseMl[ch]));
   };
 
   for (const ch of ["A", "B", "C"] as SourceChannel[]) {
@@ -970,7 +959,7 @@ export function createScene(container: HTMLElement): Scene {
       updateRainingClasses();
     },
 
-    onDose(cb: (ch: Channel, ml: number, speed: number) => void) {
+    onDose(cb: (ch: Channel, ml: number) => void) {
       doseCallbacks.push(cb);
     },
 

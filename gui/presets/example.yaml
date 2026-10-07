@@ -10,16 +10,12 @@ blocks:
     pumps:
       A:
         ml: 5
-        speed: 80
       B:
         ml: 3
-        speed: 80
       C:
         ml: 0
-        speed: 80
       D:
         ml: 0
-        speed: 80
   - id: b2
     type: pause
     s: 5
@@ -28,29 +24,21 @@ blocks:
     pumps:
       A:
         ml: 0
-        speed: 80
       B:
         ml: 0
-        speed: 80
       C:
         ml: 1
-        speed: 40
       D:
         ml: 0
-        speed: 80
   - id: b4
     type: pump
     pumps:
       A:
         ml: 0
-        speed: 80
       B:
         ml: 0
-        speed: 80
       C:
         ml: 0
-        speed: 80
       D:
         ml: 9
-        speed: 80
 repeat: 1

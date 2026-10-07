@@ -161,10 +161,8 @@ function yamlParse(yaml: string): any {
 // Why a block's pumps are invalid, or null if they are fine (mirrors api.pumps_error)
 export function pumpsError(pumps: Partial<Record<Channel, ChannelPump>>): string | null {
   for (const ch of Object.keys(pumps) as Channel[]) {
-    const { ml, speed } = pumps[ch]!;
+    const { ml } = pumps[ch]!;
     if (ml < 0) return `${ch}: negative mL`;
-    if (!(speed >= 0 && speed <= 100)) return `${ch}: speed must be 0-100`;
-    if (ml > 0 && speed === 0) return `${ch}: mL set but speed = 0`;
   }
   return null;
 }
@@ -283,7 +281,7 @@ class MockBackend implements BackendApi {
   // paused, then emits one `pumped` event per channel with the mL delivered.
   private async runPumpBlock(pumps: Partial<Record<Channel, ChannelPump>>, source: PumpSource): Promise<void> {
     const jobs = (Object.keys(pumps) as Channel[])
-      .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumpSeconds(pumps[ch]!.ml, pumps[ch]!.speed) }))
+      .map((ch) => ({ ch, ml: pumps[ch]!.ml, s: pumpSeconds(pumps[ch]!.ml) }))
       .filter((j) => j.s > 0);
     if (!jobs.length || !this.running) return;
     const duration = Math.max(...jobs.map((j) => j.s)) * 1000;
@@ -381,9 +379,9 @@ class MockBackend implements BackendApi {
     return { ok: true };
   }
 
-  async manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }> {
-    if (ml <= 0 || !(speed > 0 && speed <= 100)) {
-      return { ok: false, error: "Dose needs mL > 0 and 0 < speed <= 100" };
+  async manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }> {
+    if (!(ml > 0)) {
+      return { ok: false, error: "Dose needs mL > 0" };
     }
     if (this.running) {
       return { ok: false, error: "Busy" };
@@ -393,12 +391,12 @@ class MockBackend implements BackendApi {
     this.paused = false;
     this.activeStatus = "dosing";
     emitEvent({ type: "status", status: "dosing" });
-    emitEvent({ type: "dose_start", channel, ml, speed });
+    emitEvent({ type: "dose_start", channel, ml });
 
     // Like the Python runner, the call returns right away and the dose runs in the background.
     (async () => {
       try {
-        await this.runPumpBlock({ [channel]: { ml, speed } }, "manual");
+        await this.runPumpBlock({ [channel]: { ml } }, "manual");
         if (this.running) emitEvent({ type: "status", status: "ready" });
       } finally {
         this.running = false;
@@ -504,10 +502,10 @@ function seedExamplePreset(): void {
             id: "b1",
             type: "pump" as const,
             pumps: {
-              A: { ml: 5, speed: 80 },
-              B: { ml: 3, speed: 80 },
-              C: { ml: 0, speed: 80 },
-              D: { ml: 0, speed: 80 },
+              A: { ml: 5 },
+              B: { ml: 3 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
           { id: "b2", type: "pause" as const, s: 5 },
@@ -515,20 +513,20 @@ function seedExamplePreset(): void {
             id: "b3",
             type: "pump" as const,
             pumps: {
-              A: { ml: 0, speed: 80 },
-              B: { ml: 0, speed: 80 },
-              C: { ml: 1, speed: 40 },
-              D: { ml: 0, speed: 80 },
+              A: { ml: 0 },
+              B: { ml: 0 },
+              C: { ml: 1 },
+              D: { ml: 0 },
             },
           },
           {
             id: "b4",
             type: "pump" as const,
             pumps: {
-              A: { ml: 0, speed: 80 },
-              B: { ml: 0, speed: 80 },
-              C: { ml: 0, speed: 80 },
-              D: { ml: 9, speed: 80 },
+              A: { ml: 0 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 9 },
             },
           },
         ],

@@ -4,31 +4,24 @@ import { flow } from "./flow";
 import type { Block } from "./types";
 
 describe("computeTotals", () => {
-  // Max flow of 100 mL/s, so a channel takes ml / speed seconds
-  const realMax = flow.maxMlPerS;
+  // Flow of 1 mL/s, so a channel takes ml seconds
+  const realFlow = flow.mlPerS;
   beforeAll(() => {
-    flow.maxMlPerS = 100;
+    flow.mlPerS = 1;
   });
   afterAll(() => {
-    flow.maxMlPerS = realMax;
+    flow.mlPerS = realFlow;
   });
 
-  it("takes longer at a lower speed", () => {
-    const block = (speed: number): Block[] => [
-      {
-        id: "b1",
-        type: "pump",
-        pumps: {
-          A: { ml: 10, speed },
-          B: { ml: 0, speed: 80 },
-          C: { ml: 0, speed: 80 },
-          D: { ml: 0, speed: 80 },
-        },
-      },
+  it("estimates time from mL and the flow", () => {
+    const block = (ml: number): Block[] => [
+      { id: "b1", type: "pump", pumps: { A: { ml }, B: { ml: 0 }, C: { ml: 0 }, D: { ml: 0 } } },
     ];
-    expect(computeTotals(block(10), 1).totalTime).toBe(1);
-    expect(computeTotals(block(5), 1).totalTime).toBe(2);
-    expect(computeTotals(block(0), 1).totalTime).toBe(0); // speed 0 = idle
+    expect(computeTotals(block(10), 1).totalTime).toBe(10);
+    flow.mlPerS = 2;
+    expect(computeTotals(block(10), 1).totalTime).toBe(5);
+    flow.mlPerS = 1;
+    expect(computeTotals(block(0), 1).totalTime).toBe(0); // 0 mL = idle
   });
 
   it("computes totals for a simple pump block", () => {
@@ -37,10 +30,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, speed: 2 },
-          B: { ml: 5, speed: 1.67 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 0, speed: 0 },
+          A: { ml: 10 },
+          B: { ml: 5 },
+          C: { ml: 0 },
+          D: { ml: 0 },
         },
       },
     ];
@@ -49,8 +42,8 @@ describe("computeTotals", () => {
 
     expect(result.totalIn).toBe(15); // 10 + 5 + 0
     expect(result.totalOut).toBe(0);
-    expect(result.totalTime).toBe(5); // slowest channel: A 10 mL at 2 % of 100 mL/s
-    expect(result.timeStr).toBe("0:05");
+    expect(result.totalTime).toBe(10); // largest channel: A 10 mL
+    expect(result.timeStr).toBe("0:10");
   });
 
   it("computes totals with D channel (output)", () => {
@@ -59,10 +52,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, speed: 2 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 8, speed: 0.8 },
+          A: { ml: 10 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 8 },
         },
       },
     ];
@@ -80,10 +73,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 5, speed: 2.5 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 0, speed: 0 },
+          A: { ml: 5 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 0 },
         },
       },
       {
@@ -97,7 +90,7 @@ describe("computeTotals", () => {
 
     expect(result.totalIn).toBe(5);
     expect(result.totalOut).toBe(0);
-    expect(result.totalTime).toBe(5); // 2 + 3
+    expect(result.totalTime).toBe(8); // 5 + 3
   });
 
   it("multiplies totalTime by repeat", () => {
@@ -106,10 +99,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 12, speed: 2 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 0, speed: 0 },
+          A: { ml: 12 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 0 },
         },
       },
     ];
@@ -117,8 +110,8 @@ describe("computeTotals", () => {
     const result = computeTotals(blocks, 3);
 
     // totalTime is multiplied by repeat
-    expect(result.totalTime).toBe(18); // 6 * 3
-    expect(result.timeStr).toBe("0:18");
+    expect(result.totalTime).toBe(36); // 12 * 3
+    expect(result.timeStr).toBe("0:36");
   });
 
   it("multiplies totalIn/totalOut by repeat too", () => {
@@ -127,10 +120,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 10, speed: 5 },
-          B: { ml: 5, speed: 2.5 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 3, speed: 1.5 },
+          A: { ml: 10 },
+          B: { ml: 5 },
+          C: { ml: 0 },
+          D: { ml: 3 },
         },
       },
     ];
@@ -140,7 +133,7 @@ describe("computeTotals", () => {
     // A full run repeats the whole block sequence, so mL totals scale with repeat too
     expect(result.totalIn).toBe(30); // (10 + 5) * 2
     expect(result.totalOut).toBe(6); // 3 * 2
-    expect(result.totalTime).toBe(4); // 2 * 2
+    expect(result.totalTime).toBe(20); // 10 * 2
   });
 
   it("formats time correctly with minutes and seconds", () => {
@@ -149,10 +142,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 65, speed: 1 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 0, speed: 0 },
+          A: { ml: 65 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 0 },
         },
       },
     ];
@@ -168,10 +161,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 5, speed: 2.5 },
-          B: { ml: 3, speed: 1 },
-          C: { ml: 2, speed: 2 },
-          D: { ml: 1, speed: 0.5 },
+          A: { ml: 5 },
+          B: { ml: 3 },
+          C: { ml: 2 },
+          D: { ml: 1 },
         },
       },
       {
@@ -183,10 +176,10 @@ describe("computeTotals", () => {
         id: "b3",
         type: "pump",
         pumps: {
-          A: { ml: 4, speed: 4 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 5, speed: 2.5 },
+          A: { ml: 4 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 5 },
         },
       },
     ];
@@ -195,7 +188,7 @@ describe("computeTotals", () => {
 
     expect(result.totalIn).toBe(5 + 3 + 2 + 4); // A and B and C from b1, A from b3
     expect(result.totalOut).toBe(1 + 5); // D from b1 and b3
-    expect(result.totalTime).toBe(3 + 1 + 2); // max(2,3,1,2) + 1 + max(1,0,0,2)
+    expect(result.totalTime).toBe(5 + 1 + 5); // max(5,3,2,1) + 1 + max(4,0,0,5)
   });
 
   it("handles empty block list", () => {
@@ -213,10 +206,10 @@ describe("computeTotals", () => {
         id: "b1",
         type: "pump",
         pumps: {
-          A: { ml: 0, speed: 0 },
-          B: { ml: 0, speed: 0 },
-          C: { ml: 0, speed: 0 },
-          D: { ml: 0, speed: 0 },
+          A: { ml: 0 },
+          B: { ml: 0 },
+          C: { ml: 0 },
+          D: { ml: 0 },
         },
       },
     ];

@@ -21,21 +21,16 @@ import webview
 import yaml
 
 
-def pump_seconds(ml: float, speed: float) -> float:
-    """How long one channel takes to pump `ml` at `speed` (0-100 % of max flow)."""
-    return ml / (hardware.MAX_FLOW_ML_PER_S * speed / 100)
+def pump_seconds(ml: float) -> float:
+    """Estimated time one channel takes to pump `ml`."""
+    return ml / hardware.FLOW_ML_PER_S
 
 
 def pumps_error(pumps: Dict[str, Any]) -> Optional[str]:
     """Return why a block's pumps are invalid, or None if they are fine."""
     for ch, p in pumps.items():
-        ml, speed = float(p.get("ml", 0) or 0), float(p.get("speed", 0) or 0)
-        if ml < 0:
+        if float(p.get("ml", 0) or 0) < 0:
             return f"{ch}: negative mL"
-        if not 0 <= speed <= 100:
-            return f"{ch}: speed must be 0-100"
-        if ml > 0 and speed == 0:
-            return f"{ch}: mL set but speed = 0"
     return None
 
 
@@ -153,9 +148,9 @@ class Api:
         now = time.monotonic()
         return elapsed + (now - last), now
 
-    def _emit_pumped(self, jobs: Dict[str, "tuple[float, float, float]"], elapsed: float, source: str) -> None:
-        """Report how much each channel actually delivered (pro-rata if cut short)."""
-        for ch, (ml, _, s) in jobs.items():
+    def _emit_pumped(self, jobs: Dict[str, "tuple[float, float]"], elapsed: float, source: str) -> None:
+        """Report how much each channel delivered (estimated pro-rata if stopped)."""
+        for ch, (ml, s) in jobs.items():
             delivered = ml if elapsed >= s else ml * elapsed / s
             if delivered > 0:
                 self._emit_event({"type": "pumped", "channel": ch, "ml": delivered, "source": source})
@@ -163,19 +158,18 @@ class Api:
     def _run_pump_block(self, pumps: Dict[str, Any], source: str) -> None:
         """Pump every active channel at once with `hardware.run_step`, which
         blocks until the whole block is done. The pump runs at its own rate (the
-        DilutionController uses 90 % of max flow), so `speed` only feeds the
-        time estimate. A block can't be paused (Pause takes effect at the next
+        DilutionController uses 90 % of max flow). A block can't be paused (Pause takes effect at the next
         block); Stop cuts it short via `hardware.stop_all`. Emits a `pumped`
         event per channel, tagged with `source`."""
-        jobs: Dict[str, "tuple[float, float, float]"] = {}  # ch -> (ml, speed, seconds)
+        jobs: Dict[str, "tuple[float, float]"] = {}  # ch -> (ml, estimated seconds)
         for ch, p in pumps.items():
-            ml, speed = float(p.get("ml", 0) or 0), float(p.get("speed", 0) or 0)
-            if ml > 0 and speed > 0:
-                jobs[ch] = (ml, speed, pump_seconds(ml, speed))
+            ml = float(p.get("ml", 0) or 0)
+            if ml > 0:
+                jobs[ch] = (ml, pump_seconds(ml))
         if not jobs or self._stop_event.is_set():
             return
         start = time.monotonic()
-        hardware.run_step({ch: ml for ch, (ml, _, _) in jobs.items()})
+        hardware.run_step({ch: ml for ch, (ml, _) in jobs.items()})
         # Stopped: estimate what was delivered from the time it ran.
         elapsed = time.monotonic() - start if self._stop_event.is_set() else math.inf
         self._emit_pumped(jobs, elapsed, source)
@@ -364,15 +358,15 @@ class Api:
     def _busy(self) -> bool:
         return self._runner_thread is not None and self._runner_thread.is_alive()
 
-    def manual_dose(self, channel: str, ml: float, speed: float) -> Dict[str, Any]:
-        """Pump a fixed `ml` on one channel at `speed` % (one manual click).
+    def manual_dose(self, channel: str, ml: float) -> Dict[str, Any]:
+        """Pump a fixed `ml` on one channel (one manual click).
         Runs on the runner thread, so it is refused while anything else runs and
         can be stopped with stop()."""
-        ml, speed = float(ml), float(speed)
+        ml = float(ml)
         if channel not in ("A", "B", "C", "D"):
             return {"ok": False, "error": f"Unknown channel {channel}"}
-        if ml <= 0 or not 0 < speed <= 100:
-            return {"ok": False, "error": "Dose needs mL > 0 and 0 < speed <= 100"}
+        if not ml > 0:
+            return {"ok": False, "error": "Dose needs mL > 0"}
         with self._runner_lock:
             if self._busy():
                 return {"ok": False, "error": "Busy"}
@@ -385,8 +379,8 @@ class Api:
                 try:
                     self._active_status = "dosing"
                     self._emit_event({"type": "status", "status": "dosing"})
-                    self._emit_event({"type": "dose_start", "channel": channel, "ml": ml, "speed": speed})
-                    self._run_pump_block({channel: {"ml": ml, "speed": speed}}, "manual")
+                    self._emit_event({"type": "dose_start", "channel": channel, "ml": ml})
+                    self._run_pump_block({channel: {"ml": ml}}, "manual")
                     if not self._stop_event.is_set():
                         self._emit_event({"type": "status", "status": "ready"})
                 except Exception as e:

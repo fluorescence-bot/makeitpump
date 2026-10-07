@@ -3,7 +3,6 @@ Tests for RainMixer API (gui/api.py).
 
 These tests verify:
 - Multi-channel pump block execution and event ordering
-- Pause/resume with the remaining mL at the same speed
 - Stop behavior and concurrent run prevention
 - Manual dosing (fixed mL per click, rejected while busy, partial on stop)
 - `pumped` events for the session log
@@ -19,6 +18,8 @@ from typing import Any, Dict, List
 import pytest
 import api
 import hardware
+
+FAKE_PUMP_ML_PER_S = 10.0  # the fake pump's own rate
 
 
 class FakeWindow:
@@ -52,36 +53,32 @@ def api_instance(fake_window):
 
 @pytest.fixture(autouse=True)
 def fast_flow(monkeypatch):
-    """Max flow of 100 mL/s, so a channel takes ml / speed seconds and tests stay fast."""
-    monkeypatch.setattr(hardware, "MAX_FLOW_ML_PER_S", 100.0)
+    """Estimate the fake pump's flow (FAKE_PUMP_ML_PER_S), so tests stay fast."""
+    monkeypatch.setattr(hardware, "FLOW_ML_PER_S", FAKE_PUMP_ML_PER_S)
 
 
-def test_pump_seconds_uses_max_flow():
-    assert api.pump_seconds(10, 50) == pytest.approx(0.2)
+def test_pump_seconds_uses_flow():
+    assert api.pump_seconds(2) == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize(
     "pumps, error",
     [
-        ({"A": {"ml": 1, "speed": 80}}, None),
-        ({"A": {"ml": 0, "speed": 0}}, None),
-        ({"A": {"ml": 1, "speed": 0}}, "A: mL set but speed = 0"),
-        ({"B": {"ml": 1, "speed": 120}}, "B: speed must be 0-100"),
-        ({"C": {"ml": -1, "speed": 50}}, "C: negative mL"),
+        ({"A": {"ml": 1}}, None),
+        ({"A": {"ml": 0}}, None),
+        ({"A": {"ml": 1, "speed": 120}}, None),  # old presets' speed is ignored
+        ({"C": {"ml": -1}}, "C: negative mL"),
     ],
 )
 def test_pumps_error(pumps, error):
     assert api.pumps_error(pumps) == error
 
 
-def test_run_rejects_invalid_speed(api_instance, mock_hardware):
-    blocks = [{"id": "b1", "type": "pump", "pumps": {"A": {"ml": 1, "speed": 150}}}]
+def test_run_rejects_negative_ml(api_instance, mock_hardware):
+    blocks = [{"id": "b1", "type": "pump", "pumps": {"A": {"ml": -1}}}]
     result = api_instance.run_program(blocks, 1)
-    assert result == {"ok": False, "error": "A: speed must be 0-100"}
+    assert result == {"ok": False, "error": "A: negative mL"}
     assert mock_hardware["run_step"] == []
-
-
-FAKE_PUMP_ML_PER_S = 10.0  # the fake pump's own rate (like the real one, it ignores speed)
 
 
 @pytest.fixture
@@ -133,10 +130,10 @@ class TestPumpBlock:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 9, "speed": 30},
-                    "B": {"ml": 5, "speed": 50},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 9},
+                    "B": {"ml": 5},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -172,20 +169,20 @@ class TestPumpBlock:
         final_events = [e for e in events if e["type"] == "status" and e["status"] == "done"]
         assert len(final_events) == 1
 
-        # One step with only A and B (ml > 0 and speed > 0)
+        # One step with only A and B (ml > 0)
         assert mock_hardware["run_step"] == [{"A": 9, "B": 5}]
 
     def test_pump_block_idle_channels_dont_start(self, api_instance, mock_hardware):
-        """Channels with no mL (or speed 0) should not start pumps."""
+        """Channels with no mL should not be pumped."""
         blocks = [
             {
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 0, "speed": 80},  # no mL, should not start
-                    "B": {"ml": 5, "speed": 50},  # active
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 0},  # no mL, should not start
+                    "B": {"ml": 5},  # active
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -204,10 +201,10 @@ class TestPumpBlock:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 2.5, "speed": 10},
-                    "B": {"ml": 1.5, "speed": 10},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 2.5},
+                    "B": {"ml": 1.5},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -231,10 +228,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 100, "speed": 10},  # Long run
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 100},  # Long run
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -263,10 +260,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 3, "speed": 10},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 3},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -293,10 +290,10 @@ class TestStop:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "speed": 0.5},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 1},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -319,8 +316,8 @@ class TestPauseResume:
     """Tests for pause and resume functionality."""
 
     TWO_BLOCKS = [
-        {"id": "b1", "type": "pump", "pumps": {"A": {"ml": 4, "speed": 25}}},  # 0.4 s
-        {"id": "b2", "type": "pump", "pumps": {"B": {"ml": 1, "speed": 25}}},  # 0.1 s
+        {"id": "b1", "type": "pump", "pumps": {"A": {"ml": 4}}},  # 0.4 s
+        {"id": "b2", "type": "pump", "pumps": {"B": {"ml": 1}}},  # 0.1 s
     ]
 
     def test_pause_waits_for_block_end(self, api_instance, fake_window, mock_hardware):
@@ -384,14 +381,14 @@ class TestManualDose:
 
     def test_dose_pumps_fixed_amount(self, api_instance, fake_window, mock_hardware):
         """A dose pumps the given mL on its channel and reports the full mL."""
-        result = api_instance.manual_dose("A", 2.5, 25)
+        result = api_instance.manual_dose("A", 2.5)
         assert result["ok"] is True
         assert wait_for_thread(api_instance._runner_thread)
 
         assert mock_hardware["run_step"] == [{"A": 2.5}]
 
         assert fake_window.events[0] == {"type": "status", "status": "dosing"}
-        assert {"type": "dose_start", "channel": "A", "ml": 2.5, "speed": 25} in fake_window.events
+        assert {"type": "dose_start", "channel": "A", "ml": 2.5} in fake_window.events
 
         pumped = [e for e in fake_window.events if e["type"] == "pumped"]
         assert pumped == [{"type": "pumped", "channel": "A", "ml": 2.5, "source": "manual"}]
@@ -399,10 +396,10 @@ class TestManualDose:
 
     def test_dose_rejected_while_dosing(self, api_instance, mock_hardware):
         """A second click while a dose runs is refused."""
-        assert api_instance.manual_dose("A", 1, 1)["ok"] is True
+        assert api_instance.manual_dose("A", 5)["ok"] is True
         time.sleep(0.05)
 
-        result = api_instance.manual_dose("B", 1, 1)
+        result = api_instance.manual_dose("B", 1)
         assert result["ok"] is False
         assert "Busy" in result.get("error", "")
 
@@ -416,10 +413,10 @@ class TestManualDose:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "speed": 1},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 5},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -427,7 +424,7 @@ class TestManualDose:
         api_instance.run_program(blocks, 1)
         time.sleep(0.05)  # Let it start
 
-        result = api_instance.manual_dose("B", 1, 50)
+        result = api_instance.manual_dose("B", 1)
         assert result["ok"] is False
         assert "Busy" in result.get("error", "")
 
@@ -436,7 +433,7 @@ class TestManualDose:
 
     def test_run_rejected_during_dose(self, api_instance, mock_hardware):
         """A program cannot start while a dose runs."""
-        api_instance.manual_dose("A", 1, 1)
+        api_instance.manual_dose("A", 5)
         time.sleep(0.05)
 
         result = api_instance.run_program([{"id": "b1", "type": "pause", "s": 0.1}], 1)
@@ -447,7 +444,7 @@ class TestManualDose:
 
     def test_stopped_dose_reports_partial_ml(self, api_instance, fake_window, mock_hardware):
         """Stopping mid-dose logs only what was actually pumped."""
-        api_instance.manual_dose("C", 10, 10)
+        api_instance.manual_dose("C", 10)
         time.sleep(0.3)
         api_instance.stop()
         assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
@@ -458,10 +455,10 @@ class TestManualDose:
         assert pumped[0]["source"] == "manual"
         assert 1.0 < pumped[0]["ml"] < 6.0
 
-    @pytest.mark.parametrize("ml, speed", [(0, 50), (1, 0), (-1, 50), (1, 101)])
-    def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml, speed):
-        """Zero or negative mL, and speed outside (0, 100], are refused without touching the pump."""
-        assert api_instance.manual_dose("A", ml, speed)["ok"] is False
+    @pytest.mark.parametrize("ml", [0, -1])
+    def test_dose_rejects_bad_values(self, api_instance, mock_hardware, ml):
+        """Zero or negative mL is refused without touching the pump."""
+        assert api_instance.manual_dose("A", ml)["ok"] is False
         assert mock_hardware["run_step"] == []
 
 
@@ -474,10 +471,10 @@ class TestPumpedEvents:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 3, "speed": 30},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 1, "speed": 20},
+                    "A": {"ml": 3},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 1},
                 },
             }
         ]
@@ -496,10 +493,10 @@ class TestPumpedEvents:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 10, "speed": 10},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 10},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -523,10 +520,10 @@ class TestRepeat:
                 "id": "b1",
                 "type": "pump",
                 "pumps": {
-                    "A": {"ml": 1, "speed": 10},
-                    "B": {"ml": 0, "speed": 0},
-                    "C": {"ml": 0, "speed": 0},
-                    "D": {"ml": 0, "speed": 0},
+                    "A": {"ml": 1},
+                    "B": {"ml": 0},
+                    "C": {"ml": 0},
+                    "D": {"ml": 0},
                 },
             }
         ]
@@ -561,10 +558,10 @@ class TestPresets:
                     "id": "b1",
                     "type": "pump",
                     "pumps": {
-                        "A": {"ml": 10, "speed": 80},
-                        "B": {"ml": 5, "speed": 80},
-                        "C": {"ml": 0, "speed": 0},
-                        "D": {"ml": 0, "speed": 0},
+                        "A": {"ml": 10},
+                        "B": {"ml": 5},
+                        "C": {"ml": 0},
+                        "D": {"ml": 0},
                     },
                 }
             ],

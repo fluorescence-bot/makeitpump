@@ -6,13 +6,13 @@ import type { Block, BackendEvent, Preset } from "./types";
 describe("bridge mock", () => {
   let events: BackendEvent[] = [];
 
-  // Max flow of 100 mL/s, so a channel takes ml / speed seconds and tests stay fast
-  const realMax = flow.maxMlPerS;
+  // Flow of 10 mL/s, so a channel takes ml / 10 seconds and tests stay fast
+  const realFlow = flow.mlPerS;
   beforeAll(() => {
-    flow.maxMlPerS = 100;
+    flow.mlPerS = 10;
   });
   afterAll(() => {
-    flow.maxMlPerS = realMax;
+    flow.mlPerS = realFlow;
   });
 
   beforeEach(() => {
@@ -49,10 +49,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 5, speed: 50 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 5 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -95,10 +95,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, speed: 5 },
-              B: { ml: 1, speed: 10 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 2 },
+              B: { ml: 1 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -122,10 +122,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, speed: 1 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 5 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -155,10 +155,10 @@ describe("bridge mock", () => {
       {
         const api = await getApi();
 
-        const idle = { ml: 0, speed: 0 };
+        const idle = { ml: 0 };
         const blocks: Block[] = [
-          { id: "b1", type: "pump", pumps: { A: { ml: 3, speed: 10 }, B: idle, C: idle, D: idle } }, // 0.3 s
-          { id: "b2", type: "pump", pumps: { A: idle, B: { ml: 1, speed: 10 }, C: idle, D: idle } }, // 0.1 s
+          { id: "b1", type: "pump", pumps: { A: { ml: 3 }, B: idle, C: idle, D: idle } }, // 0.3 s
+          { id: "b2", type: "pump", pumps: { A: idle, B: { ml: 1 }, C: idle, D: idle } }, // 0.1 s
         ];
 
         const promise = api.run_program(blocks, 1);
@@ -195,10 +195,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, speed: 0.5 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 1 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -221,7 +221,7 @@ describe("bridge mock", () => {
     it("emits dosing, dose_start, pumped and ready", async () => {
       const testEvents = await runWithEvents(async () => {
         const api = await getApi();
-        const result = await api.manual_dose("A", 2, 20);
+        const result = await api.manual_dose("A", 2);
         expect(result.ok).toBe(true);
         await new Promise((r) => setTimeout(r, 250));
       });
@@ -240,8 +240,8 @@ describe("bridge mock", () => {
     it("rejects a second click while dosing", async () => {
       await runWithEvents(async () => {
         const api = await getApi();
-        expect((await api.manual_dose("A", 1, 1)).ok).toBe(true);
-        const second = await api.manual_dose("B", 1, 1);
+        expect((await api.manual_dose("A", 1)).ok).toBe(true);
+        const second = await api.manual_dose("B", 1);
         expect(second.ok).toBe(false);
         await api.stop();
         await new Promise((r) => setTimeout(r, 100));
@@ -251,7 +251,7 @@ describe("bridge mock", () => {
     it("reports partial mL when stopped", async () => {
       const testEvents = await runWithEvents(async () => {
         const api = await getApi();
-        await api.manual_dose("C", 10, 10);
+        await api.manual_dose("C", 10);
         await new Promise((r) => setTimeout(r, 300));
         await api.stop();
         await new Promise((r) => setTimeout(r, 100));
@@ -272,10 +272,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, speed: 1 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 5 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -283,7 +283,7 @@ describe("bridge mock", () => {
         const promise = api.run_program(blocks, 1);
         await new Promise((r) => setTimeout(r, 50));
 
-        const result = await api.manual_dose("B", 1, 1);
+        const result = await api.manual_dose("B", 1);
         expect(result.ok).toBe(false);
 
         await api.stop();
@@ -294,33 +294,31 @@ describe("bridge mock", () => {
 
   describe("validation", () => {
     it("pumpsError mirrors the backend rules", () => {
-      expect(pumpsError({ A: { ml: 1, speed: 80 }, B: { ml: 0, speed: 0 } })).toBeNull();
-      expect(pumpsError({ A: { ml: 1, speed: 0 } })).toBe("A: mL set but speed = 0");
-      expect(pumpsError({ B: { ml: 1, speed: 120 } })).toBe("B: speed must be 0-100");
-      expect(pumpsError({ C: { ml: -1, speed: 50 } })).toBe("C: negative mL");
+      expect(pumpsError({ A: { ml: 1 }, B: { ml: 0 } })).toBeNull();
+      expect(pumpsError({ C: { ml: -1 } })).toBe("C: negative mL");
     });
 
-    it("run_program refuses an out-of-range speed", async () => {
+    it("run_program refuses negative mL", async () => {
       const api = await getApi();
       const blocks: Block[] = [
         {
           id: "b1",
           type: "pump",
           pumps: {
-            A: { ml: 1, speed: 150 },
-            B: { ml: 0, speed: 0 },
-            C: { ml: 0, speed: 0 },
-            D: { ml: 0, speed: 0 },
+            A: { ml: -1 },
+            B: { ml: 0 },
+            C: { ml: 0 },
+            D: { ml: 0 },
           },
         },
       ];
-      expect(await api.run_program(blocks, 1)).toEqual({ ok: false, error: "A: speed must be 0-100" });
+      expect(await api.run_program(blocks, 1)).toEqual({ ok: false, error: "A: negative mL" });
     });
 
-    it("manual_dose refuses speed 0 or above 100", async () => {
+    it("manual_dose refuses 0 or negative mL", async () => {
       const api = await getApi();
-      expect((await api.manual_dose("A", 1, 0)).ok).toBe(false);
-      expect((await api.manual_dose("A", 1, 101)).ok).toBe(false);
+      expect((await api.manual_dose("A", 0)).ok).toBe(false);
+      expect((await api.manual_dose("A", -1)).ok).toBe(false);
     });
   });
 
@@ -333,10 +331,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 3, speed: 30 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 1, speed: 20 },
+              A: { ml: 3 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 1 },
             },
           },
         ];
@@ -360,10 +358,10 @@ describe("bridge mock", () => {
             id: "b1",
             type: "pump",
             pumps: {
-              A: { ml: 1, speed: 20 },
-              B: { ml: 0, speed: 0 },
-              C: { ml: 0, speed: 0 },
-              D: { ml: 0, speed: 0 },
+              A: { ml: 1 },
+              B: { ml: 0 },
+              C: { ml: 0 },
+              D: { ml: 0 },
             },
           },
         ];
@@ -400,10 +398,10 @@ describe("bridge mock", () => {
               id: "b1",
               type: "pump",
               pumps: {
-                A: { ml: 10, speed: 80 },
-                B: { ml: 0, speed: 0 },
-                C: { ml: 0, speed: 0 },
-                D: { ml: 0, speed: 0 },
+                A: { ml: 10 },
+                B: { ml: 0 },
+                C: { ml: 0 },
+                D: { ml: 0 },
               },
             },
           ],
@@ -461,10 +459,10 @@ describe("bridge mock", () => {
               id: "b1",
               type: "pump",
               pumps: {
-                A: { ml: 10.5, speed: 62.5 },
-                B: { ml: 3, speed: 12.5 },
-                C: { ml: 0, speed: 0 },
-                D: { ml: 0, speed: 0 },
+                A: { ml: 10.5 },
+                B: { ml: 3 },
+                C: { ml: 0 },
+                D: { ml: 0 },
               },
             },
             {
@@ -476,10 +474,10 @@ describe("bridge mock", () => {
               id: "b3",
               type: "pump",
               pumps: {
-                A: { ml: 0, speed: 0 },
-                B: { ml: 0, speed: 0 },
-                C: { ml: 1, speed: 40 },
-                D: { ml: 9, speed: 80 },
+                A: { ml: 0 },
+                B: { ml: 0 },
+                C: { ml: 1 },
+                D: { ml: 9 },
               },
             },
           ],
@@ -503,9 +501,7 @@ describe("bridge mock", () => {
         const firstBlock = loaded?.blocks[0];
         if (firstBlock && firstBlock.type === "pump") {
           expect(firstBlock.pumps.A.ml).toBe(10.5);
-          expect(firstBlock.pumps.A.speed).toBe(62.5);
           expect(firstBlock.pumps.B.ml).toBe(3);
-          expect(firstBlock.pumps.B.speed).toBe(12.5);
         }
 
         const pauseBlock = loaded?.blocks[1];

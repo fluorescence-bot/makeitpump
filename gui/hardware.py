@@ -31,11 +31,11 @@ PUMP_ADDRESS = "/dev/ttyACM0"
 # Pump channel for each mixer channel: A/B/C pump into the bowl, D pumps it out.
 CHANNELS = {"A": 1, "B": 2, "C": 3, "D": 4}
 
-# Flow of one channel at speed 100 %. Placeholder until the pump is calibrated;
-# the UI and the runner use it to estimate how long a dose takes. Must match
-# flow.ts in the web UI. (The controller itself always runs at 90 % of the
-# pump's max flow.)
-MAX_FLOW_ML_PER_S = 1.0
+# Estimated flow of one channel. The controller runs every channel at 90 % of the
+# pump's max flow; this is only used to estimate how long a dose takes (UI
+# animations, block times, mL delivered before a Stop). Placeholder until the
+# pump is calibrated. Must match flow.ts in the web UI.
+FLOW_ML_PER_S = 1.0
 
 pump = None
 controller: Optional[DilutionController] = None

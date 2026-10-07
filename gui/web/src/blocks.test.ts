@@ -1,12 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { normalizePumpBlock } from "./blocks";
-import { DEFAULT_SPEED } from "./flow";
 import type { PumpBlock } from "./types";
 
-const idle = { ml: 0, speed: DEFAULT_SPEED };
+const idle = { ml: 0 };
 
 describe("normalizePumpBlock", () => {
-  it("normalizes new format with all channels", () => {
+  it("normalizes new format with all channels, dropping an old speed", () => {
     const block = {
       id: "b1",
       type: "pump" as const,
@@ -22,13 +21,13 @@ describe("normalizePumpBlock", () => {
 
     expect(result.id).toBe("b1");
     expect(result.type).toBe("pump");
-    expect(result.pumps.A).toEqual({ ml: 10, speed: 80 });
-    expect(result.pumps.B).toEqual({ ml: 5, speed: 50 });
-    expect(result.pumps.C).toEqual({ ml: 2, speed: 10 });
-    expect(result.pumps.D).toEqual({ ml: 1, speed: 100 });
+    expect(result.pumps.A).toEqual({ ml: 10 });
+    expect(result.pumps.B).toEqual({ ml: 5 });
+    expect(result.pumps.C).toEqual({ ml: 2 });
+    expect(result.pumps.D).toEqual({ ml: 1 });
   });
 
-  it("fills missing channels with 0 mL at the default speed", () => {
+  it("fills missing channels with 0 mL", () => {
     const block = {
       id: "b1",
       type: "pump" as const,
@@ -41,13 +40,13 @@ describe("normalizePumpBlock", () => {
 
     const result = normalizePumpBlock(block);
 
-    expect(result.pumps.A).toEqual({ ml: 10, speed: 80 });
-    expect(result.pumps.B).toEqual({ ml: 5, speed: 50 });
+    expect(result.pumps.A).toEqual({ ml: 10 });
+    expect(result.pumps.B).toEqual({ ml: 5 });
     expect(result.pumps.C).toEqual(idle);
     expect(result.pumps.D).toEqual(idle);
   });
 
-  it("gives presets saved with seconds the default speed", () => {
+  it("drops the seconds of presets saved with seconds", () => {
     const block = {
       id: "b1",
       type: "pump" as const,
@@ -59,8 +58,7 @@ describe("normalizePumpBlock", () => {
 
     const result = normalizePumpBlock(block);
 
-    // ml/s would be 1000 %, so the old seconds are dropped rather than converted
-    expect(result.pumps.A).toEqual({ ml: 10, speed: DEFAULT_SPEED });
+    expect(result.pumps.A).toEqual({ ml: 10 });
     expect(result.pumps.B).toEqual(idle);
     expect(result.pumps.A).not.toHaveProperty("s");
   });
@@ -79,11 +77,11 @@ describe("normalizePumpBlock", () => {
 
     const result = normalizePumpBlock(block);
 
-    // Non-numbers fall back to defaults; out-of-range numbers are preserved (validation elsewhere)
+    // Non-numbers fall back to 0; negative mL is preserved (validation elsewhere)
     expect(result.pumps.A).toEqual(idle);
-    expect(result.pumps.B).toEqual({ ml: -5, speed: 150 });
-    expect(result.pumps.C).toEqual({ ml: 2, speed: DEFAULT_SPEED });
-    expect(result.pumps.D).toEqual({ ml: 0, speed: 0 });
+    expect(result.pumps.B).toEqual({ ml: -5 });
+    expect(result.pumps.C).toEqual({ ml: 2 });
+    expect(result.pumps.D).toEqual({ ml: 0 });
   });
 
   it("converts legacy single-channel format", () => {
@@ -99,13 +97,13 @@ describe("normalizePumpBlock", () => {
 
     expect(result.id).toBe("b1");
     expect(result.type).toBe("pump");
-    expect(result.pumps.A).toEqual({ ml: 15, speed: DEFAULT_SPEED });
+    expect(result.pumps.A).toEqual({ ml: 15 });
     expect(result.pumps.B).toEqual(idle);
     expect(result.pumps.C).toEqual(idle);
     expect(result.pumps.D).toEqual(idle);
   });
 
-  it("handles legacy format for channel D with a speed", () => {
+  it("handles legacy format for channel D, dropping its speed", () => {
     const block = {
       id: "b1",
       type: "pump" as const,
@@ -116,7 +114,7 @@ describe("normalizePumpBlock", () => {
 
     const result = normalizePumpBlock(block);
 
-    expect(result.pumps.D).toEqual({ ml: 20, speed: 30 });
+    expect(result.pumps.D).toEqual({ ml: 20 });
     expect(result.pumps.A).toEqual(idle);
   });
 
@@ -132,7 +130,7 @@ describe("normalizePumpBlock", () => {
     const result = normalizePumpBlock(block);
 
     expect(result.pumps.B.ml).toBe(-5);
-    expect(result.pumps.B.speed).toBe(DEFAULT_SPEED);
+    expect(result.pumps.B).not.toHaveProperty("speed");
   });
 
   it("handles mixed valid and invalid values", () => {
@@ -149,9 +147,9 @@ describe("normalizePumpBlock", () => {
 
     const result = normalizePumpBlock(block);
 
-    expect(result.pumps.A).toEqual({ ml: 10, speed: 80 });
+    expect(result.pumps.A).toEqual({ ml: 10 });
     expect(result.pumps.B).toEqual(idle);
-    expect(result.pumps.C).toEqual({ ml: 2, speed: 10 });
+    expect(result.pumps.C).toEqual({ ml: 2 });
     expect(result.pumps.D).toEqual(idle);
   });
 
@@ -185,8 +183,8 @@ describe("normalizePumpBlock", () => {
     const result = normalizePumpBlock(block);
 
     // New format should take precedence
-    expect(result.pumps.A).toEqual({ ml: 10, speed: 80 });
-    expect(result.pumps.B).toEqual({ ml: 0, speed: 80 }); // Not 999
+    expect(result.pumps.A).toEqual({ ml: 10 });
+    expect(result.pumps.B).toEqual({ ml: 0 }); // Not 999
   });
 
   it("returns correct PumpBlock type", () => {

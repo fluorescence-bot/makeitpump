@@ -356,6 +356,18 @@ class TestPauseResume:
         assert statuses == ["raining", "done"]
         assert not api_instance._resume_event.is_set()
 
+    def test_pause_then_stop_within_block(self, api_instance, fake_window, mock_hardware):
+        """Stop after a pending pause ends on `stopped`, never `paused`."""
+        api_instance.run_program(self.TWO_BLOCKS, 1)
+        time.sleep(0.1)
+        api_instance.pause_run()
+        api_instance.stop()
+        assert wait_for_thread(api_instance._runner_thread, timeout=2.0)
+
+        statuses = [e["status"] for e in fake_window.events if e["type"] == "status"]
+        assert statuses == ["raining", "stopped"]
+        assert mock_hardware["run_step"] == [{"A": 4}]
+
     def test_stop_while_paused(self, api_instance, fake_window, mock_hardware):
         """Stop during a pause between blocks ends the run without pumping more."""
         api_instance.run_program(self.TWO_BLOCKS, 1)

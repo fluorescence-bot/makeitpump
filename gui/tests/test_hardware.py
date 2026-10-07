@@ -7,11 +7,12 @@ Tests for gui/hardware.py against the `ismatec` library's mock pump
 import threading
 import time
 
+import pytest
+
 import hardware
 
-
-def test_mock_is_used():
-    assert hardware.DEBUGGING
+# Never drive the real pump from the test suite.
+pytestmark = pytest.mark.skipif(not hardware.DEBUGGING, reason="hardware.DEBUGGING is off (real pump)")
 
 
 def test_run_step_pumps_and_returns():

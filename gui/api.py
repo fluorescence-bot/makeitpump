@@ -184,6 +184,8 @@ class Api:
         """Pause between blocks: blocks that can't pause themselves (pump,
         rotate) leave a pause request for here. Returns at once if not paused,
         or when resumed or stopped."""
+        if self._stop_event.is_set():
+            return
         if not self._pause_event.is_set():
             self._resume_event.clear()  # a pause+resume during the block is moot
             return

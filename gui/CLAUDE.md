@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 RainMixer: a pywebview desktop app that controls a robotic liquid mixer. Python backend
 (`app.py`, `api.py`, `hardware.py`) drives a vanilla TypeScript/Vite frontend (`web/`) through
-pywebview's JS bridge. Cute cartoon/pastel visual style. Student project; `hardware.py` is a set
-of stubs (print statements) the backend/hardware team will replace with real pump control.
+pywebview's JS bridge. Cute cartoon/pastel visual style. Student project; `hardware.py` drives the Ismatec
+pump through Andreas' `ismatec` library and `DilutionController` (see "Pump" below).
 
 **Read `CONTRACT.md` before touching backend/frontend communication, types, or runner semantics.**
-It is the source of truth for the `Api`/`BackendApi` interface, event shapes, pump-speed math, and
+It is the source of truth for the `Api`/`BackendApi` interface, event shapes, pump-flow estimates, and
 run/pause/resume/stop semantics — both the Python runner and the JS mock in `bridge.ts` must match
 it exactly. If you change behavior covered by the contract, update `CONTRACT.md` in the same change.
 
@@ -46,16 +46,16 @@ To develop with hardware wired up: `npm run dev` in one terminal, `python app.py
 
 **The program runner** (`Api._run_program_impl` and helpers in `api.py`) executes on a background
 thread so it never blocks the pywebview UI thread. A `PumpBlock` runs all 4 channels (A/B/C/D)
-concurrently, each for its own duration derived from `ml` and `speed`; a block ends when its
-slowest channel finishes. Pause/resume/stop are cooperative — the runner polls a stop/pause flag
-every 50ms rather than being interrupted. `manual_dose` reuses the same single-block runner path
+by `ml` only; it blocks in `hardware.run_step` until the pump reports every channel done, and
+can't be paused: Pause takes effect before the next block (`_wait_if_paused`); Stop calls
+`hardware.stop_all`, which cancels the step. `manual_dose` reuses the same single-block runner path
 (status `dosing` instead of `raining`).
 
-**Speed, not time:** channels are dosed by `ml` at a `speed` (0-100% of max flow), not by seconds.
-Duration is derived: `seconds = ml / (MAX_FLOW_ML_PER_S * speed / 100)`. `MAX_FLOW_ML_PER_S` is
-defined independently in `hardware.py` (Python, used by the real runner) and `web/src/flow.ts`
-(TypeScript, used by the UI mock and by animation timing) — **these two must be kept in sync**
-manually; there is no shared source.
+**mL, not speed:** channels are dosed by `ml` only; the pump picks the rate (90 % of max flow).
+Durations are estimates: `seconds = ml / FLOW_ML_PER_S`. `FLOW_ML_PER_S` is defined independently
+in `hardware.py` (Python: stopped-block estimates) and `web/src/flow.ts` (TypeScript: UI mock,
+animation timing, block times) — **these two must be kept in sync** manually; there is no shared
+source.
 
 **Frontend has no framework** — vanilla TS + Vite, DOM built by hand in `main.ts`. Key modules:
 - `bridge.ts` — the `Api` client; when no pywebview host is present (e.g. plain browser dev) it
@@ -71,16 +71,21 @@ manually; there is no shared source.
 - `types.ts` — the shared contract types; must stay verbatim-identical to the copy in
   `CONTRACT.md`.
 
-**Cuvette rotator** (`rotator.py`): unlike the pump stubs, this is a real USB-serial driver for
+**Pump** (`hardware.py`): set up 1:1 like `../reglo_gui/reglo_gui.py`. The `ismatec` library
+(`ismatec-control` from `drivs/ismatec-pump`, over SSH) is async, so the `Pump` and
+`DilutionController` (`dilution_controller.py`, a verbatim copy of `../reglo_gui/`'s — keep it in
+sync) live on an asyncio loop in a daemon thread. `DEBUGGING = True` uses the library's mock pump.
+`tests/test_hardware.py` runs against that mock; `tests/test_api.py` monkeypatches `run_step`.
+
+**Cuvette rotator** (`rotator.py`): this is a USB-serial driver for
 the Trinket M0 that turns the cuvette 0–60° (firmware in `../firmware/cuvette_rotator/`). Rotate
 blocks and `manual_rotate` wait for the board's `MOVE_COMPLETE`; replies are matched to their own
 command because a cancelled move's late reply can still be in the pipe. Tests use a fake board in
 `tests/test_rotator.py`. With the board plugged in, starting the app homes the motor.
 
 **Presets** are YAML/JSON programs (`presets/*.yaml`/`.json`): a name, per-channel solution labels,
-a list of blocks (pump or pause), and a repeat count. Loading an old preset that used `s` (seconds)
-per channel instead of `speed` drops `s` and resets to `DEFAULT_SPEED`, since converting would
-often exceed 100%.
+a list of blocks (pump or pause), and a repeat count. Loading an old preset that has a per-channel `s` (seconds)
+or `speed` drops those fields.
 
 ## Testing notes
 

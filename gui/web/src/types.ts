@@ -2,9 +2,9 @@ export type Channel = "A" | "B" | "C" | "D";
 export type SourceChannel = "A" | "B" | "C";
 
 // A pump block runs all four channels at the same time. Each channel pumps its own
-// mL at its own speed, 0-100 % of the pump's max flow (ml = 0 or speed = 0 means that
-// channel is idle). The block lasts as long as its slowest channel.
-export interface ChannelPump { ml: number; speed: number; }
+// mL (ml = 0 means that channel is idle) at the pump's own rate. The block lasts
+// until the pump reports every channel done.
+export interface ChannelPump { ml: number; }
 export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
 // Turns the cuvette robot to an absolute angle: whole degrees, 0-60.
@@ -28,7 +28,7 @@ export type BackendEvent =
   | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
-  | { type: "dose_start"; channel: Channel; ml: number; speed: number }     // a manual click started
+  | { type: "dose_start"; channel: Channel; ml: number }                    // a manual click started
   | { type: "pumped"; channel: Channel; ml: number; source: PumpSource }     // mL actually delivered (pro-rata if stopped)
   | { type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }; // deg = current angle, null if unknown
 
@@ -37,7 +37,7 @@ export interface BackendApi {
   pause_run(): Promise<{ ok: boolean }>;
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
-  manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }>;
+  manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
   rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
   list_presets(): Promise<string[]>;

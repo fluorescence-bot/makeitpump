@@ -82,22 +82,34 @@ python app.py --dev
 
 ## Hardware Integration
 
-The `hardware.py` file contains stubs for pump control:
+`hardware.py` drives the Ismatec Reglo ICC pump with Andreas' pump library
+([drivs/ismatec-pump](https://github.com/drivs/ismatec-pump), installed from
+`requirements.txt` as `ismatec-control`) and his `DilutionController`
+(`dilution_controller.py`, copied from `../reglo_gui/`), set up the same way as
+in `reglo_gui.py`. Channels A/B/C/D are pump channels 1/2/3/4.
 
-- `start_pump(channel, ml, speed)` - Start a pump on channel A/B/C/D, pumping `ml` at `speed` (0-100 % of max flow)
-- `stop_pump(channel)` - Stop a pump
-- `stop_all()` - Stop all pumps
-- `MAX_FLOW_ML_PER_S` - flow at speed 100 %, used to time doses (placeholder; keep in sync with `web/src/flow.ts`)
+The library installs over SSH, so `pip install -r requirements.txt` needs your
+SSH key on GitHub and collaborator access to the repo.
 
-The backend team replaces these functions with actual pump control logic. Currently they just print debug messages.
+Settings at the top of `hardware.py`:
+
+- `DEBUGGING` - `True` (the default) uses the library's mock pump, so no
+  hardware is needed. Set it to `False` to drive the real pump.
+- `PUMP_ADDRESS` - serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`
+  (not the cuvette rotator's port).
+- `FLOW_ML_PER_S` - estimated flow per channel, only used to estimate dose
+  times (placeholder; keep in sync with `web/src/flow.ts`).
+
+The pump runs every step at 90 % of its max flow, so pump blocks and doses are
+set in mL only. A pump block can't be paused: Pause takes effect before the
+next block.
 
 We ended up running the electronics with an Adafruit M0 Express.
 
 ## Manual Dosing & Session Totals
 
-The control bar sets a pump speed (0-100 %) shared by manual doses. Clicking
-a cloud (A/B/C) or the bowl (D) in the scene doses a fixed mL amount at that
-speed on the runner thread — doses are refused while the runner is busy and
+Clicking a cloud (A/B/C) or the bowl (D) in the scene doses that channel's
+"mL/click" amount on the runner thread — doses are refused while the runner is busy and
 can be stopped mid-way. Every pump (manual or from a program block) emits a
 `pumped` event with the mL actually delivered, which the frontend accumulates
 into a per-channel (A-D) session log shown in the scene, with reset and
@@ -111,7 +123,8 @@ gui/
 ├── requirements.txt     # Python dependencies
 ├── app.py              # Application entry point
 ├── api.py              # Backend API (exposed to JS)
-├── hardware.py         # Hardware control stubs
+├── hardware.py         # Pump control (ismatec library + DilutionController)
+├── dilution_controller.py  # Copy of ../reglo_gui/dilution_controller.py
 ├── presets/            # Preset programs (YAML)
 │   └── example.yaml
 └── web/                # Frontend (Vite + TypeScript)

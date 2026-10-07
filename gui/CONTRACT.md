@@ -17,7 +17,7 @@ gui/
     src/main.ts         # app wiring, layout, preset UI, controls, status
     src/types.ts        # shared types (below), copy verbatim
     src/bridge.ts       # talks to window.pywebview.api, falls back to an in-browser mock
-    src/flow.ts         # speed % -> seconds (MAX flow, DEFAULT_SPEED) for animations, times and the mock
+    src/flow.ts         # mL -> estimated seconds (flow.mlPerS) for animations, times and the mock
     src/blocks.ts       # program block editor (SortableJS)
     src/scene.ts        # SVG cartoon scene (clouds A/B/C, bowl D, final cup)
     src/scene.css
@@ -43,9 +43,9 @@ export type Channel = "A" | "B" | "C" | "D";
 export type SourceChannel = "A" | "B" | "C";
 
 // A pump block runs all four channels at the same time. Each channel pumps its own
-// mL at its own speed, 0-100 % of the pump's max flow (ml = 0 or speed = 0 means that
-// channel is idle). The block lasts as long as its slowest channel.
-export interface ChannelPump { ml: number; speed: number; }
+// mL (ml = 0 means that channel is idle) at the pump's own rate. The block lasts
+// until the pump reports every channel done.
+export interface ChannelPump { ml: number; }
 export interface PumpBlock { id: string; type: "pump"; pumps: Record<Channel, ChannelPump>; }
 export interface PauseBlock { id: string; type: "pause"; s: number; }
 // Turns the cuvette robot to an absolute angle: whole degrees, 0-60.
@@ -69,7 +69,7 @@ export type BackendEvent =
   | { type: "block_start"; index: number; repeat: number; block: Block }   // repeat is 0-based
   | { type: "block_end"; index: number; repeat: number }
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
-  | { type: "dose_start"; channel: Channel; ml: number; speed: number }     // a manual click started
+  | { type: "dose_start"; channel: Channel; ml: number }                    // a manual click started
   | { type: "pumped"; channel: Channel; ml: number; source: PumpSource }     // mL actually delivered (pro-rata if stopped)
   | { type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }; // deg = current angle, null if unknown
 
@@ -78,7 +78,7 @@ export interface BackendApi {
   pause_run(): Promise<{ ok: boolean }>;
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
-  manual_dose(channel: Channel, ml: number, speed: number): Promise<{ ok: boolean; error?: string }>;
+  manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
   rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
   list_presets(): Promise<string[]>;
@@ -89,12 +89,12 @@ export interface BackendApi {
 }
 ```
 
-## Pump speed
-Every pump channel runs at a **speed from 0 to 100 %** of the pump's max flow; there are no flow units in the UI. New channels and manual doses start at `DEFAULT_SPEED` (80). A channel is idle when `ml = 0` or `speed = 0`; `ml > 0` with `speed = 0`, negative mL, or a speed outside 0–100 is refused (not clamped) by `run_program`, by `manual_dose`, and by the UI before it calls them. Pause blocks are a length of time and keep `s` in seconds.
+## Pump flow
+Pump channels are set by **mL only**. The pump runs every channel at its own rate (the `DilutionController` uses 90 % of the pump's max flow), so there is no speed setting. A channel is idle when `ml = 0`; negative mL is refused (not clamped) by `run_program`, by `manual_dose` (which needs mL > 0), and by the UI before it calls them. Pause blocks are a length of time and keep `s` in seconds.
 
-Where a duration is needed (runner, mock, animations, block and program times) it is `seconds = ml / (MAX_FLOW_ML_PER_S * speed / 100)`. `MAX_FLOW_ML_PER_S` is a placeholder (1 mL/s) until the pump is calibrated, and is defined twice: `hardware.MAX_FLOW_ML_PER_S` (read at call time) and `flow.maxMlPerS` in `src/flow.ts`. The two must match.
+Where a duration is needed (stopped-block estimate, mock, animations, block and program times) it is the estimate `seconds = ml / FLOW_ML_PER_S`. `FLOW_ML_PER_S` is a placeholder (1 mL/s) until the pump is calibrated, and is defined twice: `hardware.FLOW_ML_PER_S` (read at call time) and `flow.mlPerS` in `src/flow.ts`. The two must match.
 
-Presets saved before speed existed have `s` per channel; loading them drops `s` and sets `speed` to the default (converting `ml / s` would give speeds far over 100 %).
+Presets saved with a per-channel `s` (seconds) or `speed` load with those fields dropped.
 
 ## Event delivery
 Python calls `window.__onBackendEvent(<json object>)` via `window.evaluate_js(...)`.
@@ -110,12 +110,12 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 
 ## Runner semantics (Python and mock must match)
 - `run_program`: rejects if something is already running. Sets status `raining`. For r in 0..repeat-1 and each block i, it emits `block_start`, runs it, then emits `block_end` and `progress`. When finished it sets status `done`.
-- A pump block starts every active channel simultaneously via `hardware.start_pump(channel, ml, speed)`, stops each channel when its own time has elapsed, and ends when the slowest channel is done. It checks stop/pause every 50 ms.
-- A pause block waits `s` seconds, checking stop/pause the same way.
-- Pause: stop the pump, set status `paused`, wait. Resume: set status `raining` and restart the pump with the remaining mL at the same speed (re-emitting `block_start` with the remaining block values is fine).
-- Stop: `hardware.stop_all()`, status `stopped`.
-- Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. Delivered = `ml * min(elapsed, s) / s`, where `s` is that channel's time and `elapsed` excludes paused time, so a stopped block reports only what was actually pumped. `source` is `program` or `manual`.
-- `manual_dose(channel, ml, speed)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
+- A pump block hands the mL of every active channel to `hardware.run_step`, which runs Andreas' `DilutionController` and blocks until the pump reports every channel done. The mock waits for the slowest channel's estimated time (`pumpSeconds`).
+- A pause block waits `s` seconds, checking stop/pause every 50 ms.
+- **A pump block can't be paused** (the pump has no pause, and stopping a channel loses its count). Pause takes effect before the next block: set status `paused`, wait; Resume sets the active status again and runs the next block. A pause during a pause block takes effect at once, and that block resumes with its remaining time. Pausing and resuming before the block ends doesn't pause anything; pausing during the last block lets the run finish with `done`.
+- Stop: `hardware.stop_all()` (cancels the step and stops every channel), status `stopped`.
+- Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. A finished block reports the full `ml`. A stopped block reports an estimate, `ml * min(elapsed, s) / s`, where `s` is that channel's estimated time and `elapsed` the time the block ran. `source` is `program` or `manual`.
+- `manual_dose(channel, ml)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
 ## Cuvette rotator
 A robot turns the cuvette (the "final solution" mug in the scene) to an absolute angle, **whole degrees 0–60**. It is an Adafruit Trinket M0 on USB serial running `firmware/cuvette_rotator/code.py` (protocol in its README). `rotator.py` finds it by USB VID `0x239a` / PID `0x801f` (falling back to product name `Trinket M0`), sends `HOME` on connect, and sends moves as plain integers.
@@ -127,15 +127,16 @@ A robot turns the cuvette (the "final solution" mug in the scene) to an absolute
 - `manual_rotate(deg)`: like `manual_dose`, on the runner thread: status `rotating`, then **re-home first** (`rotator` `homing`, `HOME` to the 0° switch) so every click starts from a grounded zero, then the move, then status `ready`. Rotate blocks in a program don't re-home. The UI disables Pause while `rotating`.
 - The mock fakes a rotator that connects and homes in 1.5 s, then moves at `rotate.sPerDeg` (`flow.ts`, measured ≈ 0.03 s/°).
 
-## hardware.py (stubs for the backend team)
+## hardware.py (pump control)
 ```python
-MAX_FLOW_ML_PER_S = 1.0   # flow at speed 100 %, placeholder until calibrated
+DEBUGGING = True          # True: the `ismatec` library's mock pump; False: the real pump
+PUMP_ADDRESS = "/dev/ttyACM0"
+FLOW_ML_PER_S = 1.0       # estimated flow per channel, placeholder until calibrated (estimates only)
 
-def start_pump(channel: str, ml: float, speed: float) -> None: ...   # non-blocking start, speed 0-100 %
-def stop_pump(channel: str) -> None: ...
-def stop_all() -> None: ...
+def run_step(volumes: dict[str, float]) -> None: ...   # mL per channel A-D; blocks until done or stopped
+def stop_all() -> None: ...                            # cancel the step and stop every channel; doesn't wait
 ```
-Each stub just prints what it would do.
+Set up like `reglo_gui/reglo_gui.py`: the `ismatec` Pump and `DilutionController` (`dilution_controller.py`, a copy of `reglo_gui/`'s) live on an asyncio loop in a background thread, created and `setup()` on the first step. Channels A/B/C/D are pump channels 1/2/3/4. The mock pump runs one channel at a time and can't be interrupted, so with `DEBUGGING` a stopped channel still finishes in the background.
 
 ## scene.ts exports
 ```ts
@@ -147,7 +148,7 @@ export interface Scene {
   startPour(ml: number, s: number): void;                            // bowl drains ml over s sec into final cup
   setPaused(paused: boolean): void;                                  // freeze/unfreeze running animations
   stopAll(): void;                                                   // end all animations now (volumes stay)
-  onDose(cb: (ch: Channel, ml: number, speed: number) => void): void; // click on a cloud (A/B/C) or the bowl (D); ml and speed = that channel's mL-per-click and speed % fields
+  onDose(cb: (ch: Channel, ml: number) => void): void;                // click on a cloud (A/B/C) or the bowl (D); ml = that channel's mL-per-click field
   setTotals(totals: Record<Channel, number>): void;                  // session mL shown above each cloud and the funnel
   resetBowl(): void;
   getBowl(): { A: number; B: number; C: number; total: number };
@@ -158,7 +159,7 @@ export interface Scene {
 export function createScene(container: HTMLElement): Scene;
 ```
 The robot (🦾🤖) stands right of the final-solution mug, with the current angle under it and a "rotate to °" field beside it. It is greyed out while the rotator is disconnected, and its arm cranks while it homes or moves. The mug tilts towards the rotator's angle at `rotate.sPerDeg`, in the same animation loop as the rain.
-Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each active A/B/C channel and `startPour(ml, s)` for D if active, with `s` from `pumpSeconds(ml, speed)`. On `dose_start` it does the same for the one dosed channel.
+Bowl liquid colour = volume-weighted blend of A/B/C colours. The level is proportional to total volume (full at 50 mL, capped visually). On `block_start` for a pump block, the UI calls `startRain(ch, ml, s)` for each active A/B/C channel and `startPour(ml, s)` for D if active, with `s` from `pumpSeconds(ml)`. On `dose_start` it does the same for the one dosed channel.
 
 ## Session log
 The UI keeps a per-session log of every `pumped` event and shows running totals per channel A–D (manual and program) above each cloud and the funnel, so the user can work backwards from a result (e.g. a target pH) to how much of each liquid it took. The log can be reset and copied as CSV.

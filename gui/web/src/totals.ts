@@ -27,7 +27,7 @@ export function computeTotals(blocks: Block[], repeat: number): Totals {
       totalOut += block.pumps.D?.ml || 0;
       // Duration is the slowest channel's time
       const channels: Channel[] = ["A", "B", "C", "D"];
-      totalTime += Math.max(...channels.map((ch) => pumpSeconds(block.pumps[ch]?.ml || 0, block.pumps[ch]?.speed || 0)));
+      totalTime += Math.max(...channels.map((ch) => pumpSeconds(block.pumps[ch]?.ml || 0)));
     } else if (block.type === "rotate") {
       // Estimate from the angle change, assuming the cuvette starts at 0°
       totalTime += Math.abs(block.deg - angle) * rotate.sPerDeg;

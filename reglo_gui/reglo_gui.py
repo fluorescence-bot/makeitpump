@@ -19,6 +19,7 @@ import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
 from data_store import DataStore
+from ismatec.util import Tubing
 import session_log
 
 DEBUGGING = False
@@ -92,14 +93,14 @@ ICON_PATH = Path(__file__).with_name("pump-arm-icon.png")
 WM_CLASS = "Reglogui"          # Tk keeps this as the class, "reglogui" as name
 PRESETS = {}
 EMPTY_PRESET = {"rotation": 0, "ch4_volume": "0", "mix_pause": "0",
-                "measure_pause": "30", "rows": []}
+                "measure_pause": "30", "tubing": 3.17, "rows": []}
 DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
-                "measure_pause": "30",
+                "measure_pause": "30", "tubing": 3.17,
                 "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
                          {"type": "out"}]},
     "preset2": {"rotation": 20, "ch4_volume": "0.010", "mix_pause": "10",
-                "measure_pause": "30",
+                "measure_pause": "30", "tubing": 3.17,
                 "rows": [{"type": "in", "volumes": ["0.002", "0.005", "0"]},
                          {"type": "wait", "seconds": "30"},
                          {"type": "out"},
@@ -204,7 +205,7 @@ class ArmController:
 
 
 class ArmMock:
-    """Stand-in for the arm when DEBUGGING: does nothing, needs no hardware."""
+    """Stand-in for the arm: does nothing and needs no hardware."""
 
     def connect(self):
         print("[arm mock] connect (skipped)")
@@ -450,6 +451,7 @@ class App(tk.Tk):
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
         self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
+        self.tubing_var = tk.StringVar(value="3.17")
         # Preset constants, keyed like PRESETS. Each starts locked against
         # accidental edits; the revert button restores the saved value.
         self.consts = {}
@@ -458,10 +460,20 @@ class App(tk.Tk):
                   self.rotation),
                  ("ch4_volume", "Ch 4 output volume (ml):", self.ch4_var),
                  ("mix_pause", "Mixing pause (s):", self.mix_var),
-                 ("measure_pause", "Measurement pause (s):", self.measure_var)]):
+                 ("measure_pause", "Measurement pause (s):", self.measure_var),
+                 ("tubing", "Tubing inner diameter (mm):", self.tubing_var)]):
             ttk.Label(consts, text=text, style="Card.TLabel").grid(
                 row=r, column=0, sticky="w", padx=(0, 10))
-            e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
+            if key == "tubing":
+                e = ttk.Combobox(
+                    consts, textvariable=var,
+                    values=[str(size) for size in Tubing],
+                    state="disabled", width=8)
+                e.bind("<<ComboboxSelected>>",
+                       lambda _event: self._refresh_const("tubing"))
+            else:
+                e = ttk.Entry(consts, textvariable=var, width=8,
+                              justify="center")
             e.grid(row=r, column=1, pady=2)
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
             lock = ttk.Button(consts, text=LOCKED, width=3, style="Icon.TButton",
@@ -872,7 +884,8 @@ class App(tk.Tk):
         if not allowed:
             state = "disabled"
         else:
-            state = "readonly" if c["locked"] else "normal"
+            state = ("disabled" if c["locked"] else "readonly") \
+                if key == "tubing" else ("readonly" if c["locked"] else "normal")
         c["entry"].configure(state=state)
         c["lock_btn"].configure(text=LOCKED if c["locked"] else UNLOCKED,
                                 state="normal" if allowed else "disabled")
@@ -1106,6 +1119,7 @@ class App(tk.Tk):
             "ch4_volume": self.ch4_var.get().strip(),
             "mix_pause": self.mix_var.get().strip(),
             "measure_pause": self.measure_var.get().strip(),
+            "tubing": float(self.tubing_var.get()),
             "rows": [self._row_data(i) for i in range(self._num_steps())
                      if not self._step_is_empty(i)]}
 
@@ -1125,19 +1139,44 @@ class App(tk.Tk):
             c["locked"] = True
         self._refresh_consts()
         print(f"[gui] saved changes to {name}")
+        self.save_btn.configure(state="disabled")
+        self._submit(self._apply_tubing(float(preset["tubing"])),
+                     lambda _result: self._tubing_applied(name),
+                     lambda exc: self._tubing_apply_failed(name, exc))
+
+    def _tubing_applied(self, name):
+        self._update_header()
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 
+    def _tubing_apply_failed(self, name, exc):
+        self._update_header()
+        messagebox.showerror(
+            "Tubing setting",
+            f"Changes to {name} were saved, but the pump tubing size could "
+            f"not be updated:\n{exc}")
+
+    def _create_pump(self):
+        if MOCKPUMP:
+            from ismatec.mock import Pump
+        else:
+            from ismatec import Pump
+        self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+
+    async def _apply_tubing(self, diameter):
+        if self.pump is None:
+            self._create_pump()
+        for channel in self.pump.channels:
+            await self.pump.set_tubing_inner_diameter(channel, diameter)
+
     # -- hardware set-up: pump + arm HOME/rotate, all on the asyncio thread ---
-    async def _init_hardware(self, degrees):
+    async def _init_hardware(self, degrees, tubing_diameter):
         if self.controller is None:
             # Create inside the running loop (the mock grabs the current loop).
-            if MOCKPUMP:
-                from ismatec.mock import Pump
-            else:
-                from ismatec import Pump
-            self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+            if self.pump is None:
+                self._create_pump()
             self.controller = DilutionController(self.pump)
         await self.controller.setup()
+        await self._apply_tubing(tubing_diameter)
 
         # Arm code is blocking serial I/O, so run it in a thread.
         def arm_sequence():
@@ -1403,7 +1442,7 @@ class App(tk.Tk):
         self.initialized = False
         self._set_busy(True)
         self.status.set("Setting up the pump and arm...")
-        self._submit(self._init_hardware(degrees),
+        self._submit(self._init_hardware(degrees, float(self.tubing_var.get())),
                      self._init_done, self._init_failed)
 
     # -- log explorer: browse saved sessions, open or export them -------------
@@ -1572,6 +1611,7 @@ class App(tk.Tk):
         self.destroy()
 
 
+if __name__ == "__main__":
     args = parse_args()
     DEBUGGING = args.enable_logging
     MOCKPUMP = args.mock_pump
@@ -1582,5 +1622,4 @@ class App(tk.Tk):
         logging.getLogger("ismatec").setLevel(logging.DEBUG)
     else:
         logging.disable(logging.CRITICAL)
-if __name__ == "__main__":
     App().mainloop()

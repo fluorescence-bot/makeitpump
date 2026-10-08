@@ -1,6 +1,7 @@
 """Reglo ICC pump control GUI, using DilutionController (same as the mock script)."""
 
 import asyncio
+import argparse
 import logging
 import math
 import re
@@ -20,14 +21,20 @@ from dilution_controller import DilutionController
 from data_store import DataStore
 import session_log
 
-DEBUGGING = True
+DEBUGGING = False
+MOCKPUMP = False
+MOCKARM = False
 
-if DEBUGGING:
-    logging.basicConfig(level=logging.WARNING)
-    logging.getLogger('ismatec').setLevel(logging.DEBUG)
-    from ismatec.mock import Pump
-else:
-    from ismatec import Pump
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Reglo ICC Pump Control")
+    parser.add_argument("--enable_logging", action="store_true",
+                        help="show debug logging in the terminal")
+    parser.add_argument("--mock_pump", action="store_true",
+                        help="use a mock pump instead of the real pump")
+    parser.add_argument("--mock_arm", action="store_true",
+                        help="use a mock arm instead of the real arm")
+    return parser.parse_args(argv)
 
 # ---- Configuration ---------------------------------------------------------
 COLUMN_HEADERS = ["1", "2", "3"]   # volume columns = pump channels 1-3
@@ -233,7 +240,7 @@ class App(tk.Tk):
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
-        if DEBUGGING:
+        if MOCKARM:
             self.arm = ArmMock()
         else:
             self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
@@ -1124,6 +1131,10 @@ class App(tk.Tk):
     async def _init_hardware(self, degrees):
         if self.controller is None:
             # Create inside the running loop (the mock grabs the current loop).
+            if MOCKPUMP:
+                from ismatec.mock import Pump
+            else:
+                from ismatec import Pump
             self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
             self.controller = DilutionController(self.pump)
         await self.controller.setup()
@@ -1561,5 +1572,15 @@ class App(tk.Tk):
         self.destroy()
 
 
+    args = parse_args()
+    DEBUGGING = args.enable_logging
+    MOCKPUMP = args.mock_pump
+    MOCKARM = args.mock_arm
+    if DEBUGGING:
+        logging.disable(logging.NOTSET)
+        logging.basicConfig(level=logging.DEBUG, force=True)
+        logging.getLogger("ismatec").setLevel(logging.DEBUG)
+    else:
+        logging.disable(logging.CRITICAL)
 if __name__ == "__main__":
     App().mainloop()

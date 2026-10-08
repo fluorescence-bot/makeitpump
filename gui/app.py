@@ -19,12 +19,15 @@ if sys.platform.startswith("linux") and "PYWEBVIEW_GUI" not in os.environ:
 
 import webview
 
+import hardware
 from api import Api, resource_dir
 
 
 def main() -> None:
     """Start the RainMixer application."""
     dev_mode = "--dev" in sys.argv
+    if "--pump-log" in sys.argv:
+        hardware.set_logging(True)
 
     if dev_mode:
         url = "http://localhost:5173"

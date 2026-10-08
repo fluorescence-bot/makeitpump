@@ -11,7 +11,7 @@ import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
 import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
-import type { BackendApi, BackendEvent, Preset, Channel, RotatorState, RunStatus, TubingInfo } from "./types";
+import type { BackendApi, BackendEvent, Preset, Channel, PumpInfo, RotatorState, RunStatus, TubingInfo } from "./types";
 
 // Global state
 let api: BackendApi;
@@ -79,9 +79,13 @@ async function init(): Promise<void> {
   repeatControl.innerHTML = `
     <label>Repeat ×</label>
     <input id="repeat-input" type="number" min="1" max="99" value="1">
-    <label for="tube-select" title="Inner diameter of the pump tubing. The pump doses at 90 % of the max flow it gives, so it must match the fitted tube.">Tube ⌀</label>
-    <select id="tube-select"></select>
+    <label for="tube-input" title="Inner diameter of the pump tubing. The pump doses at 90 % of the max flow it gives, so it must match the fitted tube.">Tube ⌀</label>
+    <input id="tube-input" type="number" step="0.01" min="0.13" max="3.17" placeholder="?"><span class="unit">mm</span>
     <span id="tube-flow" class="tube-flow"></span>
+    <span class="pump-buttons">
+      <button id="btn-pump-redetect" class="btn btn-small" title="Look for the pump again (e.g. after plugging it in)">🔌 Redetect pump</button>
+      <button id="btn-pump-log" class="btn btn-small btn-toggle" aria-pressed="false" title="Print the pump library's debug log to the terminal">🐞 Log</button>
+    </span>
   `;
   programPanel.appendChild(repeatControl);
 
@@ -117,12 +121,11 @@ async function init(): Promise<void> {
     </div>
   `;
 
-  if (isMock()) {
-    const mockBadge = document.createElement("div");
-    mockBadge.className = "mock-badge";
-    mockBadge.textContent = "demo mode";
-    controlBar.appendChild(mockBadge);
-  }
+  // Which pump is driven: loud badge for the mock pump (this also covers browser demo mode), subtle dot for a real one
+  const pumpBadge = document.createElement("div");
+  pumpBadge.id = "pump-badge";
+  pumpBadge.hidden = true;
+  controlBar.appendChild(pumpBadge);
 
   app.appendChild(controlBar);
 
@@ -332,12 +335,15 @@ async function init(): Promise<void> {
   });
 
   // Tubing: the pump's max flow, and so how fast every dose runs, follows the tube size set on it
-  const tubeSelect = document.getElementById("tube-select") as HTMLSelectElement;
+  const tubeInput = document.getElementById("tube-input") as HTMLInputElement;
+  let tubeMm: number | null = null;     // the pump's value, restored after a refused entry
+  let tubeSetting = false;
+  const tubeLocked = () => tubeSetting || ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
   function showTubing(t: TubingInfo): void {
-    tubeSelect.innerHTML = "";
-    if (t.mm === null) tubeSelect.add(new Option("?", ""));
-    for (const mm of t.sizes) tubeSelect.add(new Option(`${mm.toFixed(2)} mm`, String(mm)));
-    tubeSelect.value = t.mm === null ? "" : String(t.mm);
+    tubeInput.min = String(t.min_mm);
+    tubeInput.max = String(t.max_mm);
+    tubeMm = t.mm;
+    tubeInput.value = t.mm === null ? "" : String(t.mm);
 
     const flowEl = document.getElementById("tube-flow")!;
     const flows = Object.entries(t.max_ml_per_min);
@@ -351,15 +357,72 @@ async function init(): Promise<void> {
     flowEl.textContent = lo === hi ? `max ${lo} mL/min` : `max ${lo}–${hi} mL/min`;
     flowEl.title = flows.map(([ch, f]) => `${ch}: ${f} mL/min`).join("\n");
   }
-  tubeSelect.onchange = async () => {
-    if (!tubeSelect.value) return;
-    tubeSelect.disabled = true;
-    const result = await api.set_tubing(Number(tubeSelect.value));
-    tubeSelect.disabled = ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
-    showTubing(result);
-    if (!result.ok) showStatusError(result.error || "Couldn't set the tubing");
+  tubeInput.onchange = async () => {
+    const mm = tubeInput.value.trim() === "" ? NaN : Number(tubeInput.value);
+    if (!Number.isFinite(mm)) {
+      tubeInput.value = tubeMm === null ? "" : String(tubeMm);
+      return;
+    }
+    tubeSetting = true;
+    tubeInput.disabled = true;
+    try {
+      const result = await api.set_tubing(mm);
+      showTubing(result);
+      if (!result.ok) showStatusError(result.error || "Couldn't set the tubing");
+    } catch (e) {
+      tubeInput.value = tubeMm === null ? "" : String(tubeMm);
+      showStatusError(String(e));
+    } finally {
+      tubeSetting = false;
+      tubeInput.disabled = tubeLocked();
+    }
   };
-  api.get_tubing().then(showTubing);
+
+  // Pump: detect at startup (real pump, else the mock), then read its tubing; the buttons redo that
+  const redetectBtn = document.getElementById("btn-pump-redetect") as HTMLButtonElement;
+  const logBtn = document.getElementById("btn-pump-log") as HTMLButtonElement;
+  let pumpLogging = false;
+  let pumpBusy = false;
+  const pumpLocked = () => ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+  function updateRedetect(): void {
+    redetectBtn.disabled = pumpBusy || pumpLocked();
+  }
+  function showPump(p: PumpInfo): void {
+    pumpBadge.hidden = false;
+    pumpBadge.title = p.message;
+    if (p.mode === "mock") {
+      pumpBadge.className = "mock-badge pump-mock";
+      pumpBadge.textContent = p.message;
+    } else {
+      pumpBadge.className = "pump-ok";
+      pumpBadge.textContent = "● pump";
+    }
+    pumpLogging = p.logging;
+    logBtn.classList.toggle("active", p.logging);
+    logBtn.setAttribute("aria-pressed", String(p.logging));
+  }
+  async function connectPump(): Promise<void> {
+    pumpBusy = true;
+    updateRedetect();
+    try {
+      const info = await api.pump_connect();
+      showPump(info);
+      if (!info.ok) showStatusError(info.error || "Couldn't detect the pump");
+      showTubing(await api.get_tubing());
+    } catch (e) {
+      showStatusError(String(e));
+    } finally {
+      pumpBusy = false;
+      updateRedetect();
+    }
+  }
+  redetectBtn.onclick = connectPump;
+  logBtn.onclick = async () => {
+    const info = await api.set_pump_logging(!pumpLogging);
+    showPump(info);
+    if (!info.ok) showStatusError(info.error || "Couldn't change logging");
+  };
+  connectPump();
 
   // Control bar buttons
   document.getElementById("btn-rain")!.onclick = async () => {
@@ -415,7 +478,6 @@ async function init(): Promise<void> {
 
     if (event.type === "status") {
       const status = event.status;
-      currentStatus = status;
       statusPill.textContent = status === "raining" ? "Raining..." :
                                 status === "paused" ? "Paused" :
                                 status === "dosing" ? "Dosing..." :
@@ -437,7 +499,9 @@ async function init(): Promise<void> {
       stopBtn.disabled = !running && !paused;
 
       blocksEditor.setLocked(running || paused);
-      (document.getElementById("tube-select") as HTMLSelectElement).disabled = running || paused;
+      currentStatus = status;
+      (document.getElementById("tube-input") as HTMLInputElement).disabled = tubeLocked();
+      updateRedetect();
 
       if (paused) {
         scene.setPaused(true);

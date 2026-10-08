@@ -74,7 +74,7 @@ source.
 **Pump** (`hardware.py`): set up 1:1 like `../reglo_gui/reglo_gui.py`. The `ismatec` library
 (`ismatec-control` from `drivs/ismatec-pump`, over SSH) is async, so the `Pump` and
 `DilutionController` (`dilution_controller.py`, a verbatim copy of `../reglo_gui/`'s — keep it in
-sync) live on an asyncio loop in a daemon thread. `DEBUGGING = True` uses the library's mock pump.
+sync) live on an asyncio loop in a daemon thread. The real pump is detected at `PUMP_ADDRESS` (`connect()`, with a timeout), else the library's mock pump stands in; `FORCE_MOCK = True` (set by the tests) skips the real one; `python app.py --pump-log` turns ismatec debug logging on (also a UI toggle).
 `tests/test_hardware.py` runs against that mock; `tests/test_api.py` monkeypatches `run_step`.
 
 **Cuvette rotator** (`rotator.py`): this is a USB-serial driver for
@@ -83,7 +83,7 @@ blocks and `manual_rotate` wait for the board's `MOVE_COMPLETE`; replies are mat
 command because a cancelled move's late reply can still be in the pipe. Tests use a fake board in
 `tests/test_rotator.py`. With the board plugged in, starting the app homes the motor.
 
-**Presets** are YAML/JSON programs (`presets/*.yaml`/`.json`): a name, per-channel solution labels,
+**Presets** are YAML programs (`presets/*.yaml`): a name, per-channel solution labels,
 a list of blocks (pump or pause), and a repeat count. Loading an old preset that has a per-channel `s` (seconds)
 or `speed` drops those fields.
 

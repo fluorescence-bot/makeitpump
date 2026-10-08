@@ -93,8 +93,10 @@ SSH key on GitHub and collaborator access to the repo.
 
 Settings at the top of `hardware.py`:
 
-- `DEBUGGING` - `True` (the default) uses the library's mock pump, so no
-  hardware is needed. Set it to `False` to drive the real pump.
+- `FORCE_MOCK` - `False` (the default) looks for the real pump at
+  `PUMP_ADDRESS` and falls back to the library's mock pump if it isn't there
+  or doesn't answer (the app says so). `True` always uses the mock. Run
+  `python app.py --pump-log` for the pump library's debug logging.
 - `PUMP_ADDRESS` - serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`
   (not the cuvette rotator's port).
 - `FLOW_ML_PER_S` - estimated flow per channel, only used to estimate dose

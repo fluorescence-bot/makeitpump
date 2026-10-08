@@ -548,6 +548,16 @@ html, body {
   white-space: nowrap;
 }
 
+.repeat-control .unit {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: -8px;
+}
+
+.repeat-control #tube-input {
+  width: 70px;
+}
+
 .repeat-control input {
   width: 60px;
   padding: 4px 8px;
@@ -738,6 +748,33 @@ html, body {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
+}
+
+.pump-buttons {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.btn.btn-toggle.active {
+  background: #FFE3A8;
+  border-color: #E0A93A;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.12);
+}
+
+.mock-badge.pump-mock {
+  text-transform: none;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pump-ok {
+  font-size: 11px;
+  font-weight: 600;
+  color: #4FA77E;
+  opacity: 0.8;
 }
 
 /* Dialog for saving presets */

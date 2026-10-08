@@ -12,3 +12,8 @@ if "webview" not in sys.modules:
     webview.OPEN_DIALOG = 1
     webview.SAVE_DIALOG = 2
     sys.modules["webview"] = webview
+
+# Never drive the real pump from the test suite.
+import hardware  # noqa: E402
+
+hardware.FORCE_MOCK = True

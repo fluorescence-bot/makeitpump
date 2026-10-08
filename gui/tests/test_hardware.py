@@ -1,18 +1,19 @@
 """
 Tests for gui/hardware.py against the `ismatec` library's mock pump
-(hardware.DEBUGGING = True). The mock pumps one channel at a time, about
+(hardware.FORCE_MOCK = True). The mock pumps one channel at a time, about
 2 s per mL, so volumes are kept small.
 """
 
+import logging
+import queue
 import threading
 import time
+import types
 
 import pytest
 
 import hardware
 
-# Never drive the real pump from the test suite.
-pytestmark = pytest.mark.skipif(not hardware.DEBUGGING, reason="hardware.DEBUGGING is off (real pump)")
 
 
 def test_run_step_pumps_and_returns():
@@ -41,3 +42,77 @@ def test_set_tubing_sets_every_channel():
     assert tubing["mm"] == {"A": 0.19, "B": 0.19, "C": 0.19, "D": 0.19}
     assert tubing["max_ml_per_min"]["A"] > 0
     assert hardware.get_tubing() == tubing
+
+
+def test_set_tubing_accepts_trailing_zero_value():
+    """2.1 must be sent as '0210', not the library's '0021'."""
+    tubing = hardware.set_tubing(2.1)
+    assert tubing["mm"] == {"A": 2.1, "B": 2.1, "C": 2.1, "D": 2.1}
+
+
+def test_connect_force_mock():
+    info = hardware.connect()
+    assert info["mode"] == "mock" and info["address"] is None
+    assert info == hardware.info()
+
+
+def test_reconnect_then_pump(monkeypatch):
+    hardware.connect()
+    first = hardware.pump
+    hardware.connect()
+    assert hardware.pump is not first
+    hardware.run_step({"A": 0.1})
+    assert not any(hardware.pump.running.values())
+
+
+def test_missing_port_falls_back_to_mock(monkeypatch):
+    monkeypatch.setattr(hardware, "FORCE_MOCK", False)
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", "/dev/does-not-exist-pump")
+    info = hardware.connect()
+    assert info["mode"] == "mock"
+    assert info["message"] == "No pump found on /dev/does-not-exist-pump - using the mock pump"
+
+
+@pytest.mark.timeout(8)
+def test_rotator_port_is_never_taken_for_the_pump(monkeypatch, tmp_path):
+    """Without the pump, the rotator board can show up on PUMP_ADDRESS."""
+    port = tmp_path / "ttyACM0"
+    port.touch()
+    monkeypatch.setattr(hardware, "FORCE_MOCK", False)
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", str(port))
+    monkeypatch.setattr(hardware.rotator, "find_port", lambda: str(port))
+    info = hardware.connect()
+    assert info["mode"] == "mock"
+    assert str(port) in info["message"]
+
+
+def test_detection_does_not_hang_on_silent_pump(monkeypatch, tmp_path):
+    port = tmp_path / "ttyFAKE"
+    port.write_text("")
+    release = threading.Event()
+
+    class Silent:
+        def __init__(self, *a, **k):
+            self.hw = types.SimpleNamespace(_stop_event=threading.Event(), res_q=queue.Queue())
+            release.wait(30)  # never answers
+
+    monkeypatch.setattr(hardware, "FORCE_MOCK", False)
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", str(port))
+    monkeypatch.setattr(hardware, "_real_port_missing", lambda a: False)
+    monkeypatch.setattr(hardware, "RealPump", Silent)
+    monkeypatch.setattr(hardware, "PUMP_TIMEOUT_S", 0.5)
+    start = time.monotonic()
+    info = hardware.connect()
+    release.set()
+    assert time.monotonic() - start < 5
+    assert info["mode"] == "mock"
+    assert info["message"].startswith("No pump found on")
+
+
+def test_set_logging_changes_ismatec_level(monkeypatch):
+    monkeypatch.setattr(hardware, "_logging", False)
+    hardware.set_logging(True)
+    assert logging.getLogger("ismatec").level == logging.DEBUG
+    assert hardware.info()["logging"] is True
+    hardware.set_logging(False)
+    assert logging.getLogger("ismatec").level == logging.WARNING

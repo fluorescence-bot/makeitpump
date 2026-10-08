@@ -678,7 +678,7 @@ def test_get_tubing(api_instance, fake_tubing):
     assert result["ok"]
     assert result["mm"] == 1.52
     assert result["max_ml_per_min"]["A"] == pytest.approx(15.2)
-    assert 1.52 in result["sizes"]
+    assert result["min_mm"] == 0.13 and result["max_mm"] == 3.17
 
 
 def test_get_tubing_reports_mixed_channels(api_instance, fake_tubing):
@@ -703,10 +703,21 @@ def test_set_tubing_sets_every_channel(api_instance, fake_tubing):
     assert set(fake_tubing.mm.values()) == {2.06}
 
 
-def test_set_tubing_refuses_unknown_size(api_instance, fake_tubing):
-    result = api_instance.set_tubing(1.5)
+def test_set_tubing_accepts_any_value_in_range(api_instance, fake_tubing):
+    result = api_instance.set_tubing(2.1)
+    assert result["ok"] and result["mm"] == 2.1
+
+
+def test_set_tubing_rounds_to_hundredths(api_instance, fake_tubing):
+    result = api_instance.set_tubing(1.504)
+    assert result["ok"] and result["mm"] == 1.5
+
+
+@pytest.mark.parametrize("bad", [0.1, 4, float("nan"), "abc", None])
+def test_set_tubing_refuses_out_of_range(api_instance, fake_tubing, bad):
+    result = api_instance.set_tubing(bad)
     assert not result["ok"]
-    assert "Unknown tubing size" in result["error"]
+    assert result["error"] == "Tubing must be 0.13-3.17 mm"
     assert result["mm"] == 1.52
 
 
@@ -717,3 +728,34 @@ def test_set_tubing_refused_while_running(api_instance, fake_tubing):
     assert result["error"] == "Busy"
     assert result["mm"] == 1.52
     api_instance.stop()
+
+
+def test_pump_connect_refused_while_busy(api_instance, monkeypatch):
+    called = []
+    monkeypatch.setattr(hardware, "connect", lambda: called.append(1) or hardware.info())
+    api_instance.run_program([{"id": "p", "type": "pause", "s": 0.5}], 1)
+    result = api_instance.pump_connect()
+    api_instance.stop()
+    assert not result["ok"] and result["error"] == "Busy"
+    assert "mode" in result and "message" in result
+    assert called == []
+
+
+def test_pump_connect_ok(api_instance):
+    result = api_instance.pump_connect()
+    assert result["ok"] and result["mode"] == "mock"
+
+
+def test_pump_connect_error(api_instance, monkeypatch):
+    def boom():
+        raise OSError("nope")
+    monkeypatch.setattr(hardware, "connect", boom)
+    result = api_instance.pump_connect()
+    assert not result["ok"] and "nope" in result["error"]
+    assert "mode" in result
+
+
+def test_set_pump_logging(api_instance, monkeypatch):
+    monkeypatch.setattr(hardware, "_logging", False)
+    assert api_instance.set_pump_logging(True)["logging"] is True
+    assert api_instance.set_pump_logging(False)["logging"] is False

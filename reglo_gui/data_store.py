@@ -3,8 +3,7 @@ dependency).
 
 A preset is the same dict the GUI uses:
     {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
-     "measure_pause": "30",
-    "tubing": 3.17,
+     "measure_pause": "30", "tubing": 3.17, "direction": "clockwise",
      "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
               {"type": "wait", "seconds": "30"},
               {"type": "out"}]}
@@ -23,7 +22,7 @@ plus, when loaded from the database, "saved_at" and "step_count" (footer).
 
 import sqlite3
 
-SCHEMA_VERSION = 4   # bump and add a migration step in _migrate() on change
+SCHEMA_VERSION = 5   # bump and add a migration step in _migrate() on change
 
 # Each schema step is a list of single statements (not one string split on
 # ";", which would break on a ";" inside a comment).
@@ -78,6 +77,9 @@ CREATE TABLE session_steps (
 # would swallow the closing parenthesis.)
 _SCHEMA_V3 = ["ALTER TABLE session_steps ADD COLUMN wait REAL"]
 _SCHEMA_V4 = ["ALTER TABLE presets ADD COLUMN tubing REAL NOT NULL DEFAULT 0.19"]
+# direction: "clockwise" or "counterclockwise", for all pump channels.
+_SCHEMA_V5 = ["ALTER TABLE presets ADD COLUMN direction TEXT NOT NULL "
+              "DEFAULT 'clockwise'"]
 
 
 class DataStore:
@@ -93,7 +95,8 @@ class DataStore:
                 f"Database schema version {version} is newer than this "
                 f"program supports ({SCHEMA_VERSION}).")
         for target, statements in ((1, _SCHEMA_V1), (2, _SCHEMA_V2),
-                                   (3, _SCHEMA_V3), (4, _SCHEMA_V4)):
+                                   (3, _SCHEMA_V3), (4, _SCHEMA_V4),
+                                   (5, _SCHEMA_V5)):
             if version < target:
                 with self.conn:
                     for statement in statements:
@@ -117,15 +120,16 @@ class DataStore:
         presets = {}
         rows = self.conn.execute(
             "SELECT id, name, rotation, ch4_volume, mix_pause, measure_pause, "
-            "tubing "
+            "tubing, direction "
             "FROM presets ORDER BY position, id").fetchall()
-        for pid, name, rotation, ch4, mix, measure, tubing in rows:
+        for pid, name, rotation, ch4, mix, measure, tubing, direction in rows:
             steps = self.conn.execute(
                 "SELECT type, vol1, vol2, vol3, seconds FROM steps "
                 "WHERE preset_id = ? ORDER BY position", (pid,)).fetchall()
             presets[name] = {
                 "rotation": rotation, "ch4_volume": ch4, "mix_pause": mix,
                 "measure_pause": measure, "tubing": tubing,
+                "direction": direction,
                 "rows": [self._row_from_db(*step) for step in steps]}
         return presets
 
@@ -141,9 +145,10 @@ class DataStore:
             self.conn.execute(
                 "UPDATE presets SET rotation = ?, ch4_volume = ?, "
                 "mix_pause = ?, measure_pause = ?, tubing = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "direction = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (preset["rotation"], preset["ch4_volume"], preset["mix_pause"],
-                 preset["measure_pause"], preset.get("tubing", 3.17), pid))
+                 preset["measure_pause"], preset.get("tubing", 3.17),
+                 preset.get("direction", "clockwise"), pid))
             self.conn.execute("DELETE FROM steps WHERE preset_id = ?", (pid,))
             self._insert_steps(pid, preset["rows"])
 
@@ -217,10 +222,12 @@ class DataStore:
             "SELECT COALESCE(MAX(position), -1) + 1 FROM presets").fetchone()[0]
         cur = self.conn.execute(
             "INSERT INTO presets (name, position, rotation, ch4_volume, "
-            "mix_pause, measure_pause, tubing) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "mix_pause, measure_pause, tubing, direction) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (name, position, preset["rotation"], preset["ch4_volume"],
              preset["mix_pause"], preset["measure_pause"],
-             preset.get("tubing", 3.17)))
+             preset.get("tubing", 3.17),
+             preset.get("direction", "clockwise")))
         self._insert_steps(cur.lastrowid, preset["rows"])
 
     def _insert_steps(self, pid, rows):

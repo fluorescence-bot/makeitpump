@@ -19,7 +19,7 @@ import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
 from data_store import DataStore
-from ismatec.util import Tubing
+from ismatec.util import Rotation, Tubing
 import session_log
 
 DEBUGGING = False
@@ -92,15 +92,21 @@ ICON_PATH = Path(__file__).with_name("pump-arm-icon.png")
 # which gives the dock / Alt-Tab icon: see install_desktop_entry.py.
 WM_CLASS = "Reglogui"          # Tk keeps this as the class, "reglogui" as name
 PRESETS = {}
+# Pump rotation direction of a preset, as stored and shown -> pump setting.
+DIRECTIONS = {"clockwise": Rotation.CLOCKWISE,
+              "counterclockwise": Rotation.COUNTERCLOCKWISE}
 EMPTY_PRESET = {"rotation": 0, "ch4_volume": "0", "mix_pause": "0",
-                "measure_pause": "30", "tubing": 3.17, "rows": []}
+                "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise", "rows": []}
 DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
                 "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise",
                 "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
                          {"type": "out"}]},
     "preset2": {"rotation": 20, "ch4_volume": "0.010", "mix_pause": "10",
                 "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise",
                 "rows": [{"type": "in", "volumes": ["0.002", "0.005", "0"]},
                          {"type": "wait", "seconds": "30"},
                          {"type": "out"},
@@ -452,6 +458,10 @@ class App(tk.Tk):
         self.mix_var = tk.StringVar(value="0")
         self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
         self.tubing_var = tk.StringVar(value="3.17")
+        self.direction_var = tk.StringVar(value="clockwise")
+        # Constants picked from a drop-down instead of typed.
+        self._dropdowns = {"tubing": [str(size) for size in Tubing],
+                           "direction": list(DIRECTIONS)}
         # Preset constants, keyed like PRESETS. Each starts locked against
         # accidental edits; the revert button restores the saved value.
         self.consts = {}
@@ -461,16 +471,16 @@ class App(tk.Tk):
                  ("ch4_volume", "Ch 4 output volume (ml):", self.ch4_var),
                  ("mix_pause", "Mixing pause (s):", self.mix_var),
                  ("measure_pause", "Measurement pause (s):", self.measure_var),
-                 ("tubing", "Tubing inner diameter (mm):", self.tubing_var)]):
+                 ("tubing", "Tubing inner diameter (mm):", self.tubing_var),
+                 ("direction", "Direction:", self.direction_var)]):
             ttk.Label(consts, text=text, style="Card.TLabel").grid(
                 row=r, column=0, sticky="w", padx=(0, 10))
-            if key == "tubing":
+            if key in self._dropdowns:
                 e = ttk.Combobox(
-                    consts, textvariable=var,
-                    values=[str(size) for size in Tubing],
-                    state="disabled", width=8)
+                    consts, textvariable=var, values=self._dropdowns[key],
+                    state="disabled", width=8 if key == "tubing" else 16)
                 e.bind("<<ComboboxSelected>>",
-                       lambda _event: self._refresh_const("tubing"))
+                       lambda _event, k=key: self._refresh_const(k))
             else:
                 e = ttk.Entry(consts, textvariable=var, width=8,
                               justify="center")
@@ -885,7 +895,7 @@ class App(tk.Tk):
             state = "disabled"
         else:
             state = ("disabled" if c["locked"] else "readonly") \
-                if key == "tubing" else ("readonly" if c["locked"] else "normal")
+                if key in self._dropdowns else ("readonly" if c["locked"] else "normal")
         c["entry"].configure(state=state)
         c["lock_btn"].configure(text=LOCKED if c["locked"] else UNLOCKED,
                                 state="normal" if allowed else "disabled")
@@ -1120,6 +1130,7 @@ class App(tk.Tk):
             "mix_pause": self.mix_var.get().strip(),
             "measure_pause": self.measure_var.get().strip(),
             "tubing": float(self.tubing_var.get()),
+            "direction": self.direction_var.get(),
             "rows": [self._row_data(i) for i in range(self._num_steps())
                      if not self._step_is_empty(i)]}
 
@@ -1140,20 +1151,21 @@ class App(tk.Tk):
         self._refresh_consts()
         print(f"[gui] saved changes to {name}")
         self.save_btn.configure(state="disabled")
-        self._submit(self._apply_tubing(float(preset["tubing"])),
-                     lambda _result: self._tubing_applied(name),
-                     lambda exc: self._tubing_apply_failed(name, exc))
+        self._submit(self._apply_pump_settings(float(preset["tubing"]),
+                                               preset["direction"]),
+                     lambda _result: self._pump_settings_applied(name),
+                     lambda exc: self._pump_settings_failed(name, exc))
 
-    def _tubing_applied(self, name):
+    def _pump_settings_applied(self, name):
         self._update_header()
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 
-    def _tubing_apply_failed(self, name, exc):
+    def _pump_settings_failed(self, name, exc):
         self._update_header()
         messagebox.showerror(
-            "Tubing setting",
-            f"Changes to {name} were saved, but the pump tubing size could "
-            f"not be updated:\n{exc}")
+            "Pump settings",
+            f"Changes to {name} were saved, but the pump tubing size and "
+            f"direction could not be updated:\n{exc}")
 
     def _create_pump(self):
         if MOCKPUMP:
@@ -1162,21 +1174,23 @@ class App(tk.Tk):
             from ismatec import Pump
         self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
 
-    async def _apply_tubing(self, diameter):
+    async def _apply_pump_settings(self, diameter, direction):
+        """Set the tubing size and rotation direction of all channels."""
         if self.pump is None:
             self._create_pump()
         for channel in self.pump.channels:
             await self.pump.set_tubing_inner_diameter(channel, diameter)
+            await self.pump.set_rotation(channel, DIRECTIONS[direction])
 
     # -- hardware set-up: pump + arm HOME/rotate, all on the asyncio thread ---
-    async def _init_hardware(self, degrees, tubing_diameter):
+    async def _init_hardware(self, degrees, tubing_diameter, direction):
         if self.controller is None:
             # Create inside the running loop (the mock grabs the current loop).
             if self.pump is None:
                 self._create_pump()
             self.controller = DilutionController(self.pump)
         await self.controller.setup()
-        await self._apply_tubing(tubing_diameter)
+        await self._apply_pump_settings(tubing_diameter, direction)
 
         # Arm code is blocking serial I/O, so run it in a thread.
         def arm_sequence():
@@ -1442,7 +1456,8 @@ class App(tk.Tk):
         self.initialized = False
         self._set_busy(True)
         self.status.set("Setting up the pump and arm...")
-        self._submit(self._init_hardware(degrees, float(self.tubing_var.get())),
+        self._submit(self._init_hardware(degrees, float(self.tubing_var.get()),
+                                         self.direction_var.get()),
                      self._init_done, self._init_failed)
 
     # -- log explorer: browse saved sessions, open or export them -------------

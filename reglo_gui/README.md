@@ -67,6 +67,9 @@ The rotator arm's serial protocol is described in
    - **Tubing inner diameter**: select one of the pump's supported sizes
      in millimetres. It is stored with the preset and applied to all
      pump channels when saved and when a new session starts.
+   - **Direction**: clockwise (the default) or counterclockwise. Like the
+     tubing size, it is set on all four pump channels at once, when saved
+     and when a new session starts.
 
    Each setting is locked (🔒) to prevent accidental edits. Click the
    lock to edit it, and click ↶ to go back to the saved value. Click ✎
@@ -196,6 +199,7 @@ exactly as entered.
   - [x] Store the logs in SQLite.
 - [x] **Log explorer**: a button for browsing past logs.
   - [x] Export logs to CSV.
+- [x] **Tubing size and direction** per preset, applied to all channels.
 
 ### To do
 
@@ -209,8 +213,6 @@ exactly as entered.
 - [ ] **Show progress while pumping**, using the pump's `^U` event messages.
 - [ ] **Program options**, saved in SQLite: for example time as min:sec or
   seconds, and volumes in ml or µl.
-* [ ] **Direction** of the channel. Per default all channels go
-      clockwise. Maybe a setting for changing this.
 * [ ] **Units** write ml (milliliter) next to each channel header. E.g. 1
       (ml), 2 (ml), etc.
 * [ ] **Repeat** make it possible to repeat a selected X, or step X og

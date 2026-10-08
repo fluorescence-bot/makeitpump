@@ -51,9 +51,11 @@ TUBING_MAX_MM = Tubing[-1]   # 3.17
 # How long to wait for the pump to answer a tubing query/change.
 TUBING_TIMEOUT_S = 10
 
-# How long the real pump gets to answer while it is being detected (construction,
-# then the controller setup). A pump that doesn't answer counts as not found.
+# How long the real pump gets to answer its first query while it is being
+# detected. A pump that doesn't answer counts as not found.
 PUMP_TIMEOUT_S = 4
+# The controller setup sends ~10 commands; the real pump takes ~4 s for them.
+PUMP_SETUP_TIMEOUT_S = 15
 
 pump = None
 mode = "mock"                       # "real" or "mock"
@@ -157,7 +159,7 @@ def _try_real() -> bool:
     hw = holder[0] if holder else getattr(new_pump, "hw", None)
     new_controller = DilutionController(new_pump)
     try:
-        _submit(new_controller.setup()).result(PUMP_TIMEOUT_S)
+        _submit(new_controller.setup()).result(PUMP_SETUP_TIMEOUT_S)
     except BaseException as e:
         logging.getLogger(__name__).warning("Pump on %s failed setup: %r", address, e)
         _abort(hw)

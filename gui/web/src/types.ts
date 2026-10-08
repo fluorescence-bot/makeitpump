@@ -22,6 +22,29 @@ export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" |
 export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
+// Which pump the backend drives. "real" = the Ismatec pump found at `address`;
+// "mock" = no pump was found, so the ismatec library's mock pump stands in.
+export type PumpMode = "real" | "mock";
+export interface PumpInfo {
+  ok: boolean;
+  error?: string;
+  mode: PumpMode;
+  address: string | null;     // serial port of the real pump, null for the mock
+  message: string;            // for the UI, e.g. "No pump found on /dev/ttyACM0 - using the mock pump"
+  logging: boolean;           // ismatec debug logging on/off
+}
+
+// Tubing inner diameter set on the pump. It sets the pump's max flow (and so how
+// fast a dose runs), so it must match the tube that is fitted.
+export interface TubingInfo {
+  ok: boolean;
+  error?: string;
+  mm: number | null;                                   // same on every channel, else null (also when unknown)
+  min_mm: number;                                      // range the pump accepts; any value in it,
+  max_mm: number;                                      //   rounded to 0.01 mm
+  max_ml_per_min: Partial<Record<Channel, number>>;    // calibrated max flow per channel; empty when unknown
+}
+
 // Events pushed from backend -> UI
 export type BackendEvent =
   | { type: "status"; status: RunStatus; message?: string }
@@ -40,9 +63,13 @@ export interface BackendApi {
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
   rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
+  pump_connect(): Promise<PumpInfo>;                                         // (re)detect: real pump, else the mock; refused while busy
+  set_pump_logging(on: boolean): Promise<PumpInfo>;                          // ismatec debug logging
+  get_tubing(): Promise<TubingInfo>;
+  set_tubing(mm: number): Promise<TubingInfo>;                              // every channel; refused while busy
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
-  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
+  save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.yaml
   import_preset_file(): Promise<Preset | null>;                             // native open dialog
   export_preset_file(preset: Preset): Promise<{ ok: boolean }>;             // native save dialog
 }

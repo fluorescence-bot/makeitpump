@@ -1,4 +1,4 @@
-import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpSource, RotatorState, RunStatus } from "./types";
+import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpInfo, PumpSource, RotatorState, RunStatus, TubingInfo } from "./types";
 import { pumpSeconds, rotate, rotateError } from "./flow";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
@@ -187,6 +187,10 @@ export function programError(blocks: Block[], rotator: RotatorState): string | n
   return null;
 }
 
+// Tubing inner diameter range the pump accepts (ismatec.util.Tubing ends), any value in it
+export const TUBING_MIN_MM = 0.13;
+export const TUBING_MAX_MM = 3.17;
+
 // Mock backend implementation
 class MockBackend implements BackendApi {
   private running = false;
@@ -196,6 +200,8 @@ class MockBackend implements BackendApi {
   // Demo rotator: "connects" and homes in a moment, then moves at rotate.sPerDeg
   private rotatorState: RotatorState = "disconnected";
   private rotatorDeg: number | null = null;
+  private tubingMm = 1.52;
+  private pumpLogging = false;
 
   async run_program(blocks: Block[], repeat: number): Promise<{ ok: boolean; error?: string }> {
     if (this.running) {
@@ -405,6 +411,41 @@ class MockBackend implements BackendApi {
     })();
 
     return { ok: true };
+  }
+
+  private tubingInfo(): TubingInfo {
+    // Demo max flow: grows with the tube's cross-section, roughly like the real pump
+    const maxFlow = Math.round(15 * this.tubingMm ** 2 * 100) / 100;
+    const max_ml_per_min = { A: maxFlow, B: maxFlow, C: maxFlow, D: maxFlow };
+    return { ok: true, mm: this.tubingMm, min_mm: TUBING_MIN_MM, max_mm: TUBING_MAX_MM, max_ml_per_min };
+  }
+
+  private pumpInfo(): PumpInfo {
+    return { ok: true, mode: "mock", address: null, message: "Demo mode - mock pump", logging: this.pumpLogging };
+  }
+
+  async pump_connect(): Promise<PumpInfo> {
+    if (this.running) return { ...this.pumpInfo(), ok: false, error: "Busy" };
+    return this.pumpInfo();
+  }
+
+  async set_pump_logging(on: boolean): Promise<PumpInfo> {
+    this.pumpLogging = on;
+    return this.pumpInfo();
+  }
+
+  async get_tubing(): Promise<TubingInfo> {
+    return this.tubingInfo();
+  }
+
+  async set_tubing(mm: number): Promise<TubingInfo> {
+    let error: string | undefined;
+    const rounded = Math.round(mm * 100) / 100;
+    if (typeof mm !== "number" || !Number.isFinite(mm) || rounded < TUBING_MIN_MM || rounded > TUBING_MAX_MM) {
+      error = `Tubing must be ${TUBING_MIN_MM}-${TUBING_MAX_MM} mm`;
+    } else if (this.running) error = "Busy";
+    else this.tubingMm = rounded;
+    return error ? { ...this.tubingInfo(), ok: false, error } : this.tubingInfo();
   }
 
   async list_presets(): Promise<string[]> {

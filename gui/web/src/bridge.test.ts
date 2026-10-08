@@ -512,3 +512,63 @@ describe("bridge mock", () => {
     });
   });
 });
+
+describe("bridge mock tubing", () => {
+  it("reads and sets any tube size in range", async () => {
+    const api = await getApi();
+    const before = await api.get_tubing();
+    expect(before.ok).toBe(true);
+    expect(before.min_mm).toBe(0.13);
+    expect(before.max_mm).toBe(3.17);
+
+    const after = await api.set_tubing(2.1);
+    expect(after.ok).toBe(true);
+    expect(after.mm).toBe(2.1);
+    expect(after.max_ml_per_min.A).toBeGreaterThan(before.max_ml_per_min.A!);
+    expect((await api.set_tubing(1.5)).mm).toBe(1.5);
+    expect((await api.set_tubing(1.234)).mm).toBe(1.23);
+    await api.set_tubing(before.mm!);
+  });
+
+  it("refuses a size outside the range", async () => {
+    const api = await getApi();
+    const before = await api.get_tubing();
+    for (const bad of [0.1, 4, NaN]) {
+      const result = await api.set_tubing(bad);
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("Tubing must be 0.13-3.17 mm");
+      expect(result.mm).toBe(before.mm);
+    }
+  });
+});
+
+describe("bridge mock pump", () => {
+  it("always reports the mock pump", async () => {
+    const api = await getApi();
+    const info = await api.pump_connect();
+    expect(info.ok).toBe(true);
+    expect(info.mode).toBe("mock");
+    expect(info.address).toBeNull();
+    expect(info.message).toBe("Demo mode - mock pump");
+  });
+
+  it("toggles logging and remembers it", async () => {
+    const api = await getApi();
+    expect((await api.set_pump_logging(true)).logging).toBe(true);
+    expect((await api.pump_connect()).logging).toBe(true);
+    expect((await api.set_pump_logging(false)).logging).toBe(false);
+  });
+
+  it("refuses to redetect while running, but still toggles logging", async () => {
+    const api = await getApi();
+    const run = api.run_program([{ id: "p1", type: "pause", s: 1 }], 1);
+    const busy = await api.pump_connect();
+    expect(busy.ok).toBe(false);
+    expect(busy.error).toBe("Busy");
+    expect(busy.mode).toBe("mock");
+    expect((await api.set_pump_logging(true)).ok).toBe(true);
+    await api.set_pump_logging(false);
+    await api.stop();
+    await run;
+  });
+});

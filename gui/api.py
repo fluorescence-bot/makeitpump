@@ -392,6 +392,70 @@ class Api:
 
         return {"ok": True}
 
+    def _tubing_result(self, tubing: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+        sizes = set(tubing["mm"].values())
+        return {
+            "ok": True,
+            "mm": sizes.pop() if len(sizes) == 1 else None,  # None: channels differ
+            "min_mm": hardware.TUBING_MIN_MM,
+            "max_mm": hardware.TUBING_MAX_MM,
+            "max_ml_per_min": tubing["max_ml_per_min"],
+        }
+
+    def get_tubing(self) -> Dict[str, Any]:
+        """Tubing inner diameter set on the pump, and the max flow it gives."""
+        try:
+            return self._tubing_result(hardware.get_tubing())
+        except Exception as e:
+            return {"ok": False, "error": f"Pump not available: {e}", "mm": None,
+                    "min_mm": hardware.TUBING_MIN_MM, "max_mm": hardware.TUBING_MAX_MM,
+                    "max_ml_per_min": {}}
+
+    def set_tubing(self, mm: float) -> Dict[str, Any]:
+        """Set the tubing inner diameter (mm, any value in range, rounded to
+        0.01) of every pump channel."""
+        error = None
+        size = None
+        try:
+            if isinstance(mm, bool):
+                raise ValueError
+            size = round(float(mm), 2)
+            if not (hardware.TUBING_MIN_MM <= size <= hardware.TUBING_MAX_MM):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            error = f"Tubing must be {hardware.TUBING_MIN_MM}-{hardware.TUBING_MAX_MM} mm"
+        if error is None:
+            if self._busy():
+                error = "Busy"
+            else:
+                try:
+                    return self._tubing_result(hardware.set_tubing(size))
+                except Exception as e:
+                    error = f"Pump not available: {e}"
+        result = self.get_tubing()
+        result.update(ok=False, error=error)
+        return result
+
+    def _pump_info(self, **extra: Any) -> Dict[str, Any]:
+        return {**extra, **hardware.info()}
+
+    def pump_connect(self) -> Dict[str, Any]:
+        """(Re)detect the pump: the real one, else the mock. Refused while busy."""
+        if self._busy():
+            return self._pump_info(ok=False, error="Busy")
+        try:
+            return {"ok": True, **hardware.connect()}
+        except Exception as e:
+            return self._pump_info(ok=False, error=f"Pump not available: {e}")
+
+    def set_pump_logging(self, on: bool) -> Dict[str, Any]:
+        """Turn the ismatec library's debug logging on or off."""
+        try:
+            hardware.set_logging(bool(on))
+            return {"ok": True, **hardware.info()}
+        except Exception as e:
+            return self._pump_info(ok=False, error=str(e))
+
     def list_presets(self) -> List[str]:
         """List all available presets."""
         presets_dir = self._get_presets_dir()

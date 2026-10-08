@@ -11,7 +11,7 @@ import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
 import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
-import type { BackendApi, BackendEvent, Preset, Channel, RotatorState, RunStatus } from "./types";
+import type { BackendApi, BackendEvent, Preset, Channel, RotatorState, RunStatus, TubingInfo } from "./types";
 
 // Global state
 let api: BackendApi;
@@ -79,6 +79,9 @@ async function init(): Promise<void> {
   repeatControl.innerHTML = `
     <label>Repeat ×</label>
     <input id="repeat-input" type="number" min="1" max="99" value="1">
+    <label for="tube-select" title="Inner diameter of the pump tubing. The pump doses at 90 % of the max flow it gives, so it must match the fitted tube.">Tube ⌀</label>
+    <select id="tube-select"></select>
+    <span id="tube-flow" class="tube-flow"></span>
   `;
   programPanel.appendChild(repeatControl);
 
@@ -328,6 +331,36 @@ async function init(): Promise<void> {
     api.rotator_connect();
   });
 
+  // Tubing: the pump's max flow, and so how fast every dose runs, follows the tube size set on it
+  const tubeSelect = document.getElementById("tube-select") as HTMLSelectElement;
+  function showTubing(t: TubingInfo): void {
+    tubeSelect.innerHTML = "";
+    if (t.mm === null) tubeSelect.add(new Option("?", ""));
+    for (const mm of t.sizes) tubeSelect.add(new Option(`${mm.toFixed(2)} mm`, String(mm)));
+    tubeSelect.value = t.mm === null ? "" : String(t.mm);
+
+    const flowEl = document.getElementById("tube-flow")!;
+    const flows = Object.entries(t.max_ml_per_min);
+    if (!flows.length) {
+      flowEl.textContent = "pump offline";
+      flowEl.title = t.error || "";
+      return;
+    }
+    const values = flows.map(([, f]) => f);
+    const lo = Math.min(...values), hi = Math.max(...values);
+    flowEl.textContent = lo === hi ? `max ${lo} mL/min` : `max ${lo}–${hi} mL/min`;
+    flowEl.title = flows.map(([ch, f]) => `${ch}: ${f} mL/min`).join("\n");
+  }
+  tubeSelect.onchange = async () => {
+    if (!tubeSelect.value) return;
+    tubeSelect.disabled = true;
+    const result = await api.set_tubing(Number(tubeSelect.value));
+    tubeSelect.disabled = ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+    showTubing(result);
+    if (!result.ok) showStatusError(result.error || "Couldn't set the tubing");
+  };
+  api.get_tubing().then(showTubing);
+
   // Control bar buttons
   document.getElementById("btn-rain")!.onclick = async () => {
     const blocks = blocksEditor.getBlocks();
@@ -404,6 +437,7 @@ async function init(): Promise<void> {
       stopBtn.disabled = !running && !paused;
 
       blocksEditor.setLocked(running || paused);
+      (document.getElementById("tube-select") as HTMLSelectElement).disabled = running || paused;
 
       if (paused) {
         scene.setPaused(true);

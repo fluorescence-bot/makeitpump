@@ -63,6 +63,16 @@ export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" |
 export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
+// Tubing inner diameter set on the pump. It sets the pump's max flow (and so how
+// fast a dose runs), so it must match the tube that is fitted.
+export interface TubingInfo {
+  ok: boolean;
+  error?: string;
+  mm: number | null;                                   // same on every channel, else null (also when unknown)
+  sizes: number[];                                     // diameters the pump accepts, mm
+  max_ml_per_min: Partial<Record<Channel, number>>;    // calibrated max flow per channel; empty when unknown
+}
+
 // Events pushed from backend -> UI
 export type BackendEvent =
   | { type: "status"; status: RunStatus; message?: string }
@@ -81,6 +91,8 @@ export interface BackendApi {
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
   rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
+  get_tubing(): Promise<TubingInfo>;
+  set_tubing(mm: number): Promise<TubingInfo>;                              // every channel; refused while busy
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
   save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json
@@ -95,6 +107,13 @@ Pump channels are set by **mL only**. The pump runs every channel at its own rat
 Where a duration is needed (stopped-block estimate, mock, animations, block and program times) it is the estimate `seconds = ml / FLOW_ML_PER_S`. `FLOW_ML_PER_S` is a placeholder (1 mL/s) until the pump is calibrated, and is defined twice: `hardware.FLOW_ML_PER_S` (read at call time) and `flow.mlPerS` in `src/flow.ts`. The two must match.
 
 Presets saved with a per-channel `s` (seconds) or `speed` load with those fields dropped.
+
+### Tubing
+The pump's max flow comes from the tubing inner diameter stored on the pump (`DilutionController` doses at 90 % of the calibrated max), so a wrong diameter makes every dose far too slow or fast. The UI shows a **Tube ⌀** select next to Repeat × with the resulting max flow ("max X mL/min", per channel in its tooltip).
+- `get_tubing()`: reads the diameter and calibrated max flow of channels A–D. `mm` is `null` if the channels differ. If the pump can't be reached: `ok: false`, `error`, `mm: null`, `max_ml_per_min: {}`.
+- `set_tubing(mm)`: sets every channel to `mm`, then answers like `get_tubing()`. Refused (`ok: false`, with the current tubing) for a size not in `sizes` (`hardware.TUBING_MM` = `ismatec.util.Tubing`) or while anything runs (`"Busy"`); the UI disables the select while running or paused.
+- `hardware.get_tubing()` / `hardware.set_tubing(mm)` return `{"mm": {ch: mm}, "max_ml_per_min": {ch: flow}}`. The mock keeps one diameter (1.52 mm) with a made-up max flow.
+- `FLOW_ML_PER_S` does **not** follow the tubing; it stays a fixed estimate.
 
 ## Event delivery
 Python calls `window.__onBackendEvent(<json object>)` via `window.evaluate_js(...)`.
@@ -135,6 +154,8 @@ FLOW_ML_PER_S = 1.0       # estimated flow per channel, placeholder until calibr
 
 def run_step(volumes: dict[str, float]) -> None: ...   # mL per channel A-D; blocks until done or stopped
 def stop_all() -> None: ...                            # cancel the step and stop every channel; doesn't wait
+def get_tubing() -> dict: ...                          # {"mm": {ch: mm}, "max_ml_per_min": {ch: flow}} for A-D
+def set_tubing(mm: float) -> dict: ...                 # every channel; mm from TUBING_MM; returns get_tubing()
 ```
 Set up like `reglo_gui/reglo_gui.py`: the `ismatec` Pump and `DilutionController` (`dilution_controller.py`, a copy of `reglo_gui/`'s) live on an asyncio loop in a background thread, created and `setup()` on the first step. Channels A/B/C/D are pump channels 1/2/3/4. The mock pump runs one channel at a time and can't be interrupted, so with `DEBUGGING` a stopped channel still finishes in the background.
 

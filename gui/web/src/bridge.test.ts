@@ -512,3 +512,27 @@ describe("bridge mock", () => {
     });
   });
 });
+
+describe("bridge mock tubing", () => {
+  it("reads and sets the tube size", async () => {
+    const api = await getApi();
+    const before = await api.get_tubing();
+    expect(before.ok).toBe(true);
+    expect(before.sizes).toContain(2.06);
+
+    const after = await api.set_tubing(2.06);
+    expect(after.ok).toBe(true);
+    expect(after.mm).toBe(2.06);
+    expect(after.max_ml_per_min.A).toBeGreaterThan(before.max_ml_per_min.A!);
+    await api.set_tubing(before.mm!);
+  });
+
+  it("refuses a size the pump doesn't have", async () => {
+    const api = await getApi();
+    const before = await api.get_tubing();
+    const result = await api.set_tubing(1.5);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Unknown tubing size/);
+    expect(result.mm).toBe(before.mm);
+  });
+});

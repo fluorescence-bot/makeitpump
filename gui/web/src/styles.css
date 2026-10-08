@@ -520,6 +520,7 @@ html, body {
 
 .repeat-control {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -530,6 +531,21 @@ html, body {
 .repeat-control label {
   font-weight: 600;
   color: var(--ink);
+}
+
+.repeat-control select {
+  padding: 4px 8px;
+  border: 1px solid #CDB8F5;
+  border-radius: 6px;
+  font-family: var(--font);
+  background: white;
+  color: var(--ink);
+}
+
+.repeat-control .tube-flow {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .repeat-control input {

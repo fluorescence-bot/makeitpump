@@ -15,14 +15,17 @@ import threading
 from typing import Dict, Optional
 
 from dilution_controller import DilutionController
+from ismatec.util import Tubing
 
-DEBUGGING = True
+DEBUGGING = False
 
 if DEBUGGING:
     logging.basicConfig(level=logging.WARNING)
     logging.getLogger('ismatec').setLevel(logging.DEBUG)
     from ismatec.mock import Pump
 else:
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger('ismatec').setLevel(logging.DEBUG)
     from ismatec import Pump
 
 # Use COMx on Windows. NOTE: must be a different port than the cuvette rotator.
@@ -36,6 +39,14 @@ CHANNELS = {"A": 1, "B": 2, "C": 3, "D": 4}
 # animations, block times, mL delivered before a Stop). Placeholder until the
 # pump is calibrated. Must match flow.ts in the web UI.
 FLOW_ML_PER_S = 1.0
+
+# Tubing inner diameters (mm) the pump accepts. The pump turns the diameter into
+# its max flow, and the controller runs at 90 % of that, so a wrong size makes
+# every dose too slow or too fast.
+TUBING_MM = list(Tubing)
+
+# How long to wait for the pump to answer a tubing query/change.
+TUBING_TIMEOUT_S = 10
 
 pump = None
 controller: Optional[DilutionController] = None
@@ -104,3 +115,33 @@ def stop_all() -> None:
         step.cancel()
     if pump is not None:
         _submit(_stop_all())
+
+
+async def _get_tubing() -> Dict[str, Dict[str, float]]:
+    await _init_hardware()
+    mm, max_flow = {}, {}
+    for name, ch in CHANNELS.items():
+        mm[name] = await pump.get_tubing_inner_diameter(ch)
+        reply = await pump.get_max_flow_rate(ch, calibrated=True)
+        max_flow[name] = float(reply.split(' ')[0])
+    return {"mm": mm, "max_ml_per_min": max_flow}
+
+
+async def _set_tubing(mm: float) -> Dict[str, Dict[str, float]]:
+    await _init_hardware()
+    for ch in CHANNELS.values():
+        if not await pump.set_tubing_inner_diameter(ch, mm):
+            raise RuntimeError(f"Pump refused tubing {mm} mm on channel {ch}")
+    return await _get_tubing()
+
+
+def get_tubing() -> Dict[str, Dict[str, float]]:
+    """Tubing inner diameter (mm) and calibrated max flow (mL/min) of each
+    channel A-D, as stored on the pump."""
+    return _submit(_get_tubing()).result(TUBING_TIMEOUT_S)
+
+
+def set_tubing(mm: float) -> Dict[str, Dict[str, float]]:
+    """Set the tubing inner diameter of every channel to `mm` (one of
+    TUBING_MM), then return `get_tubing()`. Don't call it while a step runs."""
+    return _submit(_set_tubing(mm)).result(TUBING_TIMEOUT_S)

@@ -392,6 +392,40 @@ class Api:
 
         return {"ok": True}
 
+    def _tubing_result(self, tubing: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+        sizes = set(tubing["mm"].values())
+        return {
+            "ok": True,
+            "mm": sizes.pop() if len(sizes) == 1 else None,  # None: channels differ
+            "sizes": hardware.TUBING_MM,
+            "max_ml_per_min": tubing["max_ml_per_min"],
+        }
+
+    def get_tubing(self) -> Dict[str, Any]:
+        """Tubing inner diameter set on the pump, and the max flow it gives."""
+        try:
+            return self._tubing_result(hardware.get_tubing())
+        except Exception as e:
+            return {"ok": False, "error": f"Pump not available: {e}", "mm": None,
+                    "sizes": hardware.TUBING_MM, "max_ml_per_min": {}}
+
+    def set_tubing(self, mm: float) -> Dict[str, Any]:
+        """Set the tubing inner diameter (mm) of every pump channel."""
+        size = next((s for s in hardware.TUBING_MM if math.isclose(s, float(mm))), None)
+        error = None
+        if size is None:
+            error = f"Unknown tubing size {mm} mm"
+        elif self._busy():
+            error = "Busy"
+        else:
+            try:
+                return self._tubing_result(hardware.set_tubing(size))
+            except Exception as e:
+                error = f"Pump not available: {e}"
+        result = self.get_tubing()
+        result.update(ok=False, error=error)
+        return result
+
     def list_presets(self) -> List[str]:
         """List all available presets."""
         presets_dir = self._get_presets_dir()

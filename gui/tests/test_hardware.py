@@ -34,3 +34,10 @@ def test_stop_all_ends_run_step():
     start = time.monotonic()
     hardware.run_step({"A": 1.0})
     assert time.monotonic() - start < 1.0
+
+
+def test_set_tubing_sets_every_channel():
+    tubing = hardware.set_tubing(0.19)
+    assert tubing["mm"] == {"A": 0.19, "B": 0.19, "C": 0.19, "D": 0.19}
+    assert tubing["max_ml_per_min"]["A"] > 0
+    assert hardware.get_tubing() == tubing

@@ -22,6 +22,16 @@ export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" |
 export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
+// Tubing inner diameter set on the pump. It sets the pump's max flow (and so how
+// fast a dose runs), so it must match the tube that is fitted.
+export interface TubingInfo {
+  ok: boolean;
+  error?: string;
+  mm: number | null;                                   // same on every channel, else null (also when unknown)
+  sizes: number[];                                     // diameters the pump accepts, mm
+  max_ml_per_min: Partial<Record<Channel, number>>;    // calibrated max flow per channel; empty when unknown
+}
+
 // Events pushed from backend -> UI
 export type BackendEvent =
   | { type: "status"; status: RunStatus; message?: string }
@@ -40,6 +50,8 @@ export interface BackendApi {
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
   rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
+  get_tubing(): Promise<TubingInfo>;
+  set_tubing(mm: number): Promise<TubingInfo>;                              // every channel; refused while busy
   list_presets(): Promise<string[]>;
   load_preset(name: string): Promise<Preset | null>;
   save_preset(preset: Preset): Promise<{ ok: boolean; error?: string }>;   // saved as presets/<name>.json

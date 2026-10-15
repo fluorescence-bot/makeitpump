@@ -3,42 +3,22 @@
 Course project for Digital Fabrication and Maker Space: an automatic solution
 mixer for a fluorescence scientist. A robot pumps up to four liquids
 (A, B, C) into a mixing bowl (D), which is then pumped out to a measuring
-instrument.
+instrument. The pumping is done by an Ismatec Reglo ICC peristaltic pump, and a
+small robot rotates the cuvette (0–60°) for the measurement.
 
-- `report.pdf` / `report.tex` — the project report
-- `sketches/` / `sketches.pdf` — design sketches
-- `prototypes/` — early HTML prototypes
-- `gui/` — the graphical user interface (this repo's code)
+## Repository layout
 
-## Running the GUI
-
-On macOS or Linux, one command installs everything that's missing (Homebrew on
-macOS, uv, Python, Node.js/npm, and GTK/WebKit on Linux via apt, dnf or pacman),
-builds the frontend and opens the GUI:
-
-```bash
-./gui/run.sh            # add --clean to reinstall from scratch
 ```
-
-Manual setup:
-
-```bash
-cd gui
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cd web && npm install && npm run build && cd ..
-python app.py
+code/
+├── src/
+│   ├── kawaii_gui/       # Main desktop GUI (pywebview + TypeScript) — start here
+│   ├── reglo_gui/        # Simpler Tkinter GUI for the Reglo pump + rotator
+│   └── cuvette_rotater/  # CircuitPython firmware for the cuvette rotator (Trinket M0)
+└── lib/
+    └── ismatec-pump/     # Python driver for the Ismatec Reglo ICC pump
+course/
+├── portfolios/           # Portfolio reports (LaTeX/PDF) and sketches
+├── exercises/            # Standalone course exercises (Arduino)
+├── notes/                # Lab visit notes and photos
+└── prototypes/           # Early static HTML mockups
 ```
-
-See [`gui/README.md`](gui/README.md) for full setup (including Linux
-dependencies and dev mode), and [`gui/CONTRACT.md`](gui/CONTRACT.md) for how
-the GUI talks to the backend. The pump/robot stubs the backend team fills in
-live in [`gui/hardware.py`](gui/hardware.py).
-
-We ended up running the electronics with an Adafruit M0 Express.
-
-Manual dosing is click-driven: click a cloud (A/B/C) or the bowl (D) in the
-scene to dose a fixed mL amount at the control bar's pump speed (0-100 %).
-The scene keeps a running per-channel (A-D) session total, with reset and
-copy-as-CSV, so the operator can track how much of each liquid a mix took.

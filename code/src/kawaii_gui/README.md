@@ -1,6 +1,12 @@
 # RainMixer GUI
 
-A cute desktop application for controlling a robotic liquid mixer (RainMixer). This is a student project that combines hardware control with a delightful TypeScript/React frontend.
+A cute desktop application for controlling the automatic solution mixer
+(RainMixer): a robot pumps up to four liquids (A, B, C) into a mixing bowl (D),
+which is then pumped out to a measuring instrument. It's a pywebview desktop app
+with a Python backend and a TypeScript (Vite) frontend.
+
+All paths below are relative to this directory (`code/src/kawaii_gui/`). See
+[`CONTRACT.md`](CONTRACT.md) for how the frontend talks to the backend.
 
 ## Setup
 
@@ -11,9 +17,10 @@ A cute desktop application for controlling a robotic liquid mixer (RainMixer). T
 
 ### Quick start (one command)
 
-The run script installs whatever is missing (Node.js, uv, Python packages,
-platform GUI libraries), builds the frontend and opens the app. Re-running it
-skips steps that are already done; add `--clean` to start from scratch.
+The run script installs whatever is missing (Homebrew on macOS, Node.js/npm,
+uv, Python and its packages, GTK/WebKit on Linux via apt, dnf or pacman),
+builds the frontend and opens the app. Re-running it skips steps that are
+already done; add `--clean` to start from scratch.
 
 - **macOS / Linux:** `./run.sh`
 - **Windows 10/11:** double-click `run.cmd` (or run `run.cmd` in a terminal),
@@ -22,9 +29,9 @@ skips steps that are already done; add `--clean` to start from scratch.
 
 ### Manual installation (All Platforms)
 
-1. **Clone or enter the gui directory:**
+1. **Enter the GUI directory** (from the repo root):
    ```bash
-   cd gui
+   cd code/src/kawaii_gui
    ```
 
 2. **Create a Python virtual environment:**
@@ -121,12 +128,15 @@ dosing is click-driven.
 ## Project Structure
 
 ```
-gui/
+code/src/kawaii_gui/
 ├── requirements.txt     # Python dependencies
 ├── app.py              # Application entry point
 ├── api.py              # Backend API (exposed to JS)
 ├── hardware.py         # Pump control (ismatec library + DilutionController)
+├── rotator.py          # Cuvette rotator (Trinket M0 over USB serial)
 ├── dilution_controller.py  # Copy of ../reglo_gui/dilution_controller.py
+├── run.sh / run.ps1 / run.cmd  # One-shot setup + launch
+├── tests/              # Python tests (pytest)
 ├── presets/            # Preset programs (YAML)
 │   └── example.yaml
 └── web/                # Frontend (Vite + TypeScript)
@@ -142,6 +152,13 @@ gui/
 - Cute cartoon/anime visual style with pastel colors
 - Block-based program editor (drag-and-drop)
 - SVG scene visualization
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt && pytest -q   # Python
+cd web && npm test                                  # TypeScript
+```
 
 ### Backend (Python)
 - pywebview for desktop GUI

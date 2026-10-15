@@ -1,0 +1,48 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import asyncio
+
+from dilution_controller import DilutionController
+
+import logging
+
+DEBUGGING = True
+
+if DEBUGGING:
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger('ismatec').setLevel(logging.DEBUG)
+    from ismatec.mock import Pump
+else:
+    from ismatec import Pump
+# TODO: Change to COM if on if on Windows. /dev is unix specific.
+ADDRESS = '/dev/ttyACM0'
+
+def show(r):
+    print(f"Step {r['step']}/{r['of']} done: {r['a_ml']} ml A, {r['b_ml']} ml B")
+
+async def main():
+    pump = Pump(ADDRESS, debug = True);
+    controller = DilutionController(pump)
+    await controller.setup() 
+
+    step_counter = 0
+    
+    is_finished = False
+
+    # Example sequence. Volume in ml for channel 1 and 2 in each tuple.
+    sequence = [(0.001,0.002,0,0),
+                (0.0, 0.0, 0, 0.003)]
+
+    input("Press Return to start the dilution (Ctrl+C to abort)...")
+
+    while is_finished == False and step_counter < len(sequence):
+        result = await controller.run_step(sequence[step_counter])
+        step_counter += 1
+        print(f"Step {step_counter} completed.")
+        
+        input("Press Return for the next step...")
+
+if __name__ == "__main__":
+    asyncio.run(main())

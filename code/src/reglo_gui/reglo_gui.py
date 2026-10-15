@@ -1,31 +1,41 @@
 """Reglo ICC pump control GUI, using DilutionController (same as the mock script)."""
 
 import asyncio
+import argparse
 import logging
 import math
 import re
 import sqlite3
 import threading
+import tempfile
 import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from tkinter import font as tkfont
 
 import serial  # pip install pyserial
 
 from dilution_controller import DilutionController
 from data_store import DataStore
+from ismatec.util import Rotation, Tubing
+import session_log
 
-DEBUGGING = True
+DEBUGGING = False
+MOCKPUMP = False
+MOCKARM = False
 
-if DEBUGGING:
-    logging.basicConfig(level=logging.WARNING)
-    logging.getLogger('ismatec').setLevel(logging.DEBUG)
-    from ismatec.mock import Pump
-else:
-    from ismatec import Pump
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Reglo ICC Pump Control")
+    parser.add_argument("--enable_logging", action="store_true",
+                        help="show debug logging in the terminal")
+    parser.add_argument("--mock_pump", action="store_true",
+                        help="use a mock pump instead of the real pump")
+    parser.add_argument("--mock_arm", action="store_true",
+                        help="use a mock arm instead of the real arm")
+    return parser.parse_args(argv)
 
 # ---- Configuration ---------------------------------------------------------
 COLUMN_HEADERS = ["1", "2", "3"]   # volume columns = pump channels 1-3
@@ -40,6 +50,7 @@ STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
 RENAME = "\u270E"
+NO_SESSION_STATUS = "No session \u2014 press New session to start"
 PRESET_NAME_MAX = 40
 
 # ---- Theme -------------------------------------------------------------------
@@ -76,14 +87,26 @@ ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 # the database at startup and written through to it on Save and rename.
 DB_PATH = Path(__file__).with_name("data.db")
 OLD_DB_PATH = Path(__file__).with_name("presets.db")   # name before sessions
+ICON_PATH = Path(__file__).with_name("pump-arm-icon.png")
+# X11 class name (WM_CLASS). GNOME uses it to find the app's .desktop file,
+# which gives the dock / Alt-Tab icon: see install_desktop_entry.py.
+WM_CLASS = "Reglogui"          # Tk keeps this as the class, "reglogui" as name
 PRESETS = {}
+# Pump rotation direction of a preset, as stored and shown -> pump setting.
+DIRECTIONS = {"clockwise": Rotation.CLOCKWISE,
+              "counterclockwise": Rotation.COUNTERCLOCKWISE}
+EMPTY_PRESET = {"rotation": 0, "ch4_volume": "0", "mix_pause": "0",
+                "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise", "rows": []}
 DEFAULT_PRESETS = {
     "preset1": {"rotation": 45, "ch4_volume": "0.005", "mix_pause": "5",
-                "measure_pause": "30",
+                "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise",
                 "rows": [{"type": "in", "volumes": ["0.001", "0.002", "0"]},
                          {"type": "out"}]},
     "preset2": {"rotation": 20, "ch4_volume": "0.010", "mix_pause": "10",
-                "measure_pause": "30",
+                "measure_pause": "30", "tubing": 3.17,
+                "direction": "clockwise",
                 "rows": [{"type": "in", "volumes": ["0.002", "0.005", "0"]},
                          {"type": "wait", "seconds": "30"},
                          {"type": "out"},
@@ -188,7 +211,7 @@ class ArmController:
 
 
 class ArmMock:
-    """Stand-in for the arm when DEBUGGING: does nothing, needs no hardware."""
+    """Stand-in for the arm: does nothing and needs no hardware."""
 
     def connect(self):
         print("[arm mock] connect (skipped)")
@@ -205,8 +228,14 @@ class ArmMock:
 
 class App(tk.Tk):
     def __init__(self):
-        super().__init__()
+        super().__init__(className=WM_CLASS)
         self.title("Reglo ICC Pump Control")
+        try:
+            # Keep a reference, or Tk drops the image. True: dialogs too.
+            self._icon = tk.PhotoImage(file=ICON_PATH)
+            self.iconphoto(True, self._icon)
+        except tk.TclError:
+            pass                            # no icon file: run without one
         self.minsize(820, 790)
         self._apply_theme()
 
@@ -218,7 +247,7 @@ class App(tk.Tk):
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
-        if DEBUGGING:
+        if MOCKARM:
             self.arm = ArmMock()
         else:
             self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
@@ -231,22 +260,25 @@ class App(tk.Tk):
         self.current_preset = tk.StringVar(value=first)
         self.chosen_preset = tk.StringVar(value=first)
         self.rotation = tk.StringVar(value="45")
-        self.status = tk.StringVar(value="Not initialized")
+        self.status = tk.StringVar(value=NO_SESSION_STATUS)
         self.current_step = 0   # row that will run next; rows above are done
-        self.busy = False       # initializing or running a step
+        self.busy = False       # setting up the hardware or running a step
         self.waiting = False    # busy, but only waiting (wait step / mixing):
                                 # upcoming rows stay editable meanwhile
         self._wait_end = None   # monotonic time the current wait ends
         self.auto_run = False   # "Run all": start the next step automatically
         self.stopping = False   # Stop pressed; the running step still finishes
         self.initialized = False
-        # Session: from Initialize until New session / Exit. Kept in memory and
-        # only written to the database when saved (see data_store for its
-        # shape). _saved_steps = how many steps the last save included.
+        # Session: from New session until the next New session / Load /
+        # Exit. It starts with setting up the pump and arm. Saved to
+        # the database after every step (see data_store for its shape).
+        # _saved_steps = how many steps the last save included; fewer than
+        # logged only if an automatic save failed.
         self.session = None
         self._saved_steps = 0
-        self._init_rotation = None   # rotation the arm was initialized to
+        self._init_rotation = None   # rotation the arm was turned to
         self._step_log = None        # log entry of the step that is running
+        self._export_dir = None      # folder of the last CSV export
         self.duplicate_next = tk.BooleanVar(value=False)
         self.cells = []        # cells[row][col] -> Entry (channels 1-3)
         self.wait_cells = []   # wait_cells[row] -> Entry (seconds)
@@ -379,12 +411,23 @@ class App(tk.Tk):
                lightcolor=[("focus", ACCENT)])
         self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
 
+        st.configure("Card.TRadiobutton", background=CARD)
+        st.map("Card.TRadiobutton", background=[("active", CARD)],
+               indicatorbackground=[("selected", ACCENT)],
+               indicatorforeground=[("selected", "white")])
         st.configure("Card.TCheckbutton", background=CARD)
         st.map("Card.TCheckbutton", background=[("active", CARD)],
                indicatorbackground=[("selected", ACCENT)],
                indicatorforeground=[("selected", "white")])
         st.configure("Vertical.TScrollbar", background=NA_BG, troughcolor=CARD,
                      bordercolor=CARD, arrowcolor=MUTED, relief="flat")
+        st.configure("Treeview", background=CARD, fieldbackground=CARD,
+                     foreground=TEXT, rowheight=26, borderwidth=1)
+        st.map("Treeview", background=[("selected", ACCENT)],
+               foreground=[("selected", "white")])
+        st.configure("Treeview.Heading", background=BUTTON_BG, foreground=MUTED,
+                     font=self.font_small_bold, relief="flat", padding=(6, 4))
+        st.map("Treeview.Heading", background=[("active", HOVER_BG)])
 
     def _card(self, parent, **pack):
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -414,6 +457,11 @@ class App(tk.Tk):
         self.ch4_var = tk.StringVar(value="0")
         self.mix_var = tk.StringVar(value="0")
         self.measure_var = tk.StringVar(value="0")  # default for new Pause rows
+        self.tubing_var = tk.StringVar(value="3.17")
+        self.direction_var = tk.StringVar(value="clockwise")
+        # Constants picked from a drop-down instead of typed.
+        self._dropdowns = {"tubing": [str(size) for size in Tubing],
+                           "direction": list(DIRECTIONS)}
         # Preset constants, keyed like PRESETS. Each starts locked against
         # accidental edits; the revert button restores the saved value.
         self.consts = {}
@@ -422,10 +470,20 @@ class App(tk.Tk):
                   self.rotation),
                  ("ch4_volume", "Ch 4 output volume (ml):", self.ch4_var),
                  ("mix_pause", "Mixing pause (s):", self.mix_var),
-                 ("measure_pause", "Measurement pause (s):", self.measure_var)]):
+                 ("measure_pause", "Measurement pause (s):", self.measure_var),
+                 ("tubing", "Tubing inner diameter (mm):", self.tubing_var),
+                 ("direction", "Direction:", self.direction_var)]):
             ttk.Label(consts, text=text, style="Card.TLabel").grid(
                 row=r, column=0, sticky="w", padx=(0, 10))
-            e = ttk.Entry(consts, textvariable=var, width=8, justify="center")
+            if key in self._dropdowns:
+                e = ttk.Combobox(
+                    consts, textvariable=var, values=self._dropdowns[key],
+                    state="disabled", width=8 if key == "tubing" else 16)
+                e.bind("<<ComboboxSelected>>",
+                       lambda _event, k=key: self._refresh_const(k))
+            else:
+                e = ttk.Entry(consts, textvariable=var, width=8,
+                              justify="center")
             e.grid(row=r, column=1, pady=2)
             e.bind("<KeyRelease>", lambda ev: self._update_run_state())
             lock = ttk.Button(consts, text=LOCKED, width=3, style="Icon.TButton",
@@ -449,12 +507,18 @@ class App(tk.Tk):
                                        values=list(PRESETS), state="readonly",
                                        width=18)
         self.preset_box.pack(side="left")
-        self.ok_btn = ttk.Button(pick, text="OK", command=self.on_choose_preset)
-        self.ok_btn.pack(side="left", padx=(6, 0))
+        self.load_btn = ttk.Button(pick, text="Load",
+                                 command=self.on_choose_preset)
+        self.load_btn.pack(side="left", padx=(6, 0))
 
-        self.save_btn = ttk.Button(header, text="Save changes",
+        actions = ttk.Frame(header, style="Plain.Card.TFrame")
+        actions.grid(row=1, column=1, sticky="se")
+        self.new_preset_btn = ttk.Button(actions, text="New preset\u2026",
+                                         command=self.on_new_preset)
+        self.new_preset_btn.pack(side="left", padx=(0, 8))
+        self.save_btn = ttk.Button(actions, text="Save changes",
                                    command=self.on_save)
-        self.save_btn.grid(row=1, column=1, sticky="se")
+        self.save_btn.pack(side="left")
 
     def _build_steps(self):
         body = ttk.Frame(self)
@@ -524,12 +588,17 @@ class App(tk.Tk):
 
         side = ttk.Frame(body, style="Card.TFrame", padding=14)
         side.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        ttk.Label(side, text="Session", style="Heading.Card.TLabel").pack(
+            anchor="w")
+        self.session_label = ttk.Label(side, text="No session",
+                                       style="Muted.Card.TLabel")
+        self.session_label.pack(anchor="w", pady=(0, 8))
+        self.new_session_btn = ttk.Button(side, text="New session", width=16,
+                                          command=self.on_new_session)
+        self.new_session_btn.pack(fill="x", ipady=4)
+        ttk.Separator(side).pack(fill="x", pady=10)
         ttk.Label(side, text="Run", style="Heading.Card.TLabel").pack(
             anchor="w", pady=(0, 8))
-        self.init_btn = ttk.Button(side, text="Initialize", width=16,
-                                   command=self.on_initialize)
-        self.init_btn.pack(fill="x", ipady=4)
-        ttk.Separator(side).pack(fill="x", pady=10)
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(fill="x", ipady=4)
@@ -544,26 +613,6 @@ class App(tk.Tk):
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         style="Card.TCheckbutton",
                         variable=self.duplicate_next).pack(anchor="w")
-
-        ttk.Separator(side).pack(fill="x", pady=10)
-        ttk.Label(side, text="Session", style="Heading.Card.TLabel").pack(
-            anchor="w")
-        self.session_label = ttk.Label(side, text="No session",
-                                       style="Muted.Card.TLabel")
-        self.session_label.pack(anchor="w", pady=(0, 8))
-        session_btns = ttk.Frame(side, style="Plain.Card.TFrame")
-        session_btns.pack(fill="x")
-        session_btns.columnconfigure((0, 1), weight=1, uniform="session")
-        self.save_session_btn = ttk.Button(session_btns, text="Save", width=6,
-                                           state="disabled",
-                                           command=self.on_save_session)
-        self.save_session_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4),
-                                   ipady=4)
-        self.new_session_btn = ttk.Button(session_btns, text="New", width=6,
-                                          state="disabled",
-                                          command=self.on_new_session)
-        self.new_session_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0),
-                                  ipady=4)
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -641,11 +690,13 @@ class App(tk.Tk):
                   style="Status.TLabel").pack(side="left")
         ttk.Button(footer, text="Exit", width=10,
                    command=self.on_exit).pack(side="right")
+        ttk.Button(footer, text="Log explorer\u2026",
+                   command=self.on_log_explorer).pack(side="right", padx=(0, 8))
         self.status.trace_add("write", lambda *_: self._update_status_dot())
 
     def _update_status_dot(self):
         """Blue while running, green when ready, red on errors, grey before
-        Initialize."""
+        a session is started."""
         text = self.status.get().lower()
         if "error" in text or "failed" in text:
             colour = DANGER
@@ -809,19 +860,20 @@ class App(tk.Tk):
         return {"type": "out"}
 
     def _update_header(self):
-        """Preset switching and rotation (only applied by Initialize) only when
+        """Preset switching and rotation (only applied by New session) only when
         idle; the other preset constants and Save also while a step waits."""
         idle = not self.busy
         editable = idle or self.waiting
         self.preset_box.configure(state="readonly" if idle else "disabled")
-        self.ok_btn.configure(state="normal" if idle else "disabled")
+        self.load_btn.configure(state="normal" if idle else "disabled")
         self.rename_btn.configure(state="normal" if idle else "disabled")
+        self.new_preset_btn.configure(state="normal" if idle else "disabled")
         self.save_btn.configure(state="normal" if editable else "disabled")
         self._refresh_consts()
 
     # -- preset constants: lock + revert --------------------------------------
     def _const_allowed(self, key):
-        """Rotation only while idle (it is applied by Initialize); the others
+        """Rotation only while idle (it is applied by New session); the others
         also while a step just waits."""
         if key == "rotation":
             return not self.busy
@@ -842,7 +894,8 @@ class App(tk.Tk):
         if not allowed:
             state = "disabled"
         else:
-            state = "readonly" if c["locked"] else "normal"
+            state = ("disabled" if c["locked"] else "readonly") \
+                if key in self._dropdowns else ("readonly" if c["locked"] else "normal")
         c["entry"].configure(state=state)
         c["lock_btn"].configure(text=LOCKED if c["locked"] else UNLOCKED,
                                 state="normal" if allowed else "disabled")
@@ -871,14 +924,32 @@ class App(tk.Tk):
 
     # ---- callbacks ---------------------------------------------------------
     def on_choose_preset(self):
-        self._load_preset(self.chosen_preset.get())
+        name = self.chosen_preset.get()
+        if not self._leave_session_for(name):
+            self.chosen_preset.set(self.current_preset.get())
+            return
+        self._open_preset(name)
+
+    def _open_preset(self, name):
+        """Show preset `name`; a new session is needed before running."""
+        self._load_preset(name)
         self.initialized = False
-        self.init_btn.configure(state="normal")
-        self.status.set("Not initialized")
+        self.status.set(NO_SESSION_STATUS)
         self._update_run_state()
 
+    def _leave_session_for(self, name):
+        """Loading another preset ends the current session. Returns True to
+        go ahead (the session is then ended)."""
+        ok = self._confirm_end_session(
+            "Load preset", f"Loading '{name}' ends the current session.")
+        if ok and self.session is not None:
+            self.session = None
+            self._update_session_ui()
+        return ok
+
     def _preset_name_error(self, new, old):
-        """Why `new` can't be the new name of preset `old`, or None if it can."""
+        """Why `new` can't be the name of preset `old` (None for a new
+        preset), or None if it can."""
         if not new:
             return "The name can't be empty."
         if len(new) > PRESET_NAME_MAX:
@@ -890,19 +961,36 @@ class App(tk.Tk):
         return None
 
     def _ask_preset_name(self, old):
-        """Themed modal dialog. Returns the new name, or None if cancelled.
-        Invalid names show an error in the dialog, which stays open."""
+        """Rename dialog. Returns the new name, or None if cancelled."""
+        result = self._preset_name_dialog("Rename preset", "Rename", old, old)
+        return None if result is None else result[0]
+
+    def _preset_name_dialog(self, title, action, initial, old, choices=None,
+                            suggestions=None):
+        """Themed modal dialog asking for a preset name. `old` is the preset
+        being renamed (None for a new one). `choices` is an optional list of
+        (key, label) radio buttons; `suggestions` maps a choice to the name
+        to suggest while the user hasn't typed one. Returns (name, choice),
+        or None if cancelled. Invalid names show an error in the dialog,
+        which stays open."""
         dlg = tk.Toplevel(self, background=BG)
-        dlg.title("Rename preset")
+        dlg.title(title)
         dlg.transient(self)
         dlg.resizable(False, False)
         card = ttk.Frame(dlg, style="Card.TFrame", padding=16)
         card.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Label(card, text="Rename preset", style="Heading.Card.TLabel").pack(
+        ttk.Label(card, text=title, style="Heading.Card.TLabel").pack(
             anchor="w")
-        ttk.Label(card, text="New name", style="Muted.Card.TLabel").pack(
-            anchor="w", pady=(10, 2))
-        var = tk.StringVar(value=old)
+        choice = tk.StringVar(value=choices[0][0] if choices else "")
+        if choices:
+            ttk.Label(card, text="Start from", style="Muted.Card.TLabel").pack(
+                anchor="w", pady=(10, 2))
+            for key, label in choices:
+                ttk.Radiobutton(card, text=label, value=key, variable=choice,
+                                style="Card.TRadiobutton").pack(anchor="w")
+        ttk.Label(card, text="Name" if old is None else "New name",
+                  style="Muted.Card.TLabel").pack(anchor="w", pady=(10, 2))
+        var = tk.StringVar(value=initial)
         entry = ttk.Entry(card, textvariable=var, width=32)
         entry.pack(fill="x")
         error = ttk.Label(card, text="", style="Card.TLabel",
@@ -910,19 +998,27 @@ class App(tk.Tk):
         error.pack(anchor="w", pady=(4, 0))
         buttons = ttk.Frame(card, style="Plain.Card.TFrame")
         buttons.pack(fill="x", pady=(10, 0))
-        result = {"name": None}
+        result = {"value": None}
+
+        def on_choice(*_):
+            # follow the suggestion as long as the name hasn't been edited
+            if suggestions and var.get() in suggestions.values():
+                var.set(suggestions[choice.get()])
+                entry.select_range(0, "end")
+        choice.trace_add("write", on_choice)
 
         def ok(_event=None):
             new = var.get().strip()
-            message = None if new == old else self._preset_name_error(new, old)
+            message = (None if old is not None and new == old
+                       else self._preset_name_error(new, old))
             if message:
                 error.configure(text=message)
                 entry.focus_set()
                 return
-            result["name"] = new
+            result["value"] = (new, choice.get())
             dlg.destroy()
 
-        ttk.Button(buttons, text="Rename", style="Accent.TButton",
+        ttk.Button(buttons, text=action, style="Accent.TButton",
                    command=ok).pack(side="right")
         ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(
             side="right", padx=(0, 8))
@@ -940,7 +1036,7 @@ class App(tk.Tk):
         entry.focus_set()
         entry.select_range(0, "end")
         self.wait_window(dlg)
-        return result["name"]
+        return result["value"]
 
     def on_rename_preset(self):
         old = self.current_preset.get()
@@ -964,33 +1060,85 @@ class App(tk.Tk):
         self.current_label.configure(text=new)
         print(f"[gui] renamed preset {old} -> {new}")
 
-    def on_save(self):
-        name = self.current_preset.get()
+    def _unused_name(self, base):
+        """`base`, or `base 2`, `base 3`, ... if that name is taken."""
+        name, n = base[:PRESET_NAME_MAX], 2
+        while self._preset_name_error(name, None):
+            suffix = f" {n}"
+            name = base[:PRESET_NAME_MAX - len(suffix)] + suffix
+            n += 1
+        return name
+
+    def on_new_preset(self):
+        """Create a preset from a copy of the current one (as shown, with
+        unsaved edits) or an empty one, save it and open it."""
+        current = self.current_preset.get()
+        suggestions = {"copy": self._unused_name(f"{current} copy"),
+                       "empty": self._unused_name("New preset")}
+        answer = self._preset_name_dialog(
+            "New preset", "Create", suggestions["copy"], None,
+            choices=[("copy", f"A copy of '{current}'"),
+                     ("empty", "An empty preset")],
+            suggestions=suggestions)
+        if answer is None:
+            return                          # cancelled
+        name, start = answer
+        if start == "copy":
+            preset = self._preset_from_form()
+            if preset is None:
+                return                      # invalid value, already shown
+        else:
+            preset = {**EMPTY_PRESET, "rows": []}
+        if not self._leave_session_for(name):
+            return                          # nothing created
+        try:
+            self.store.save(name, preset)
+        except sqlite3.Error as exc:
+            messagebox.showerror("New preset",
+                                 f"Could not create the preset:\n{exc}")
+            return
+        PRESETS[name] = preset
+        self.preset_box.configure(values=list(PRESETS))
+        self.chosen_preset.set(name)
+        self._open_preset(name)
+        print(f"[gui] created preset {name} ({start})")
+
+    def _preset_from_form(self):
+        """The preset as shown in the window, or None (after showing an
+        error) if a setting isn't valid."""
         degrees = to_degrees(self.rotation.get())
         if degrees is None:
             messagebox.showerror("Invalid rotation", self._rotation_error())
-            return
+            return None
         if not is_number(self.ch4_var.get()):
             messagebox.showerror("Invalid value",
                                  "Ch 4 output volume must be a number.")
-            return
+            return None
         if not is_duration(self.mix_var.get()):
             messagebox.showerror("Invalid value",
                                  "Mixing pause must be a number of seconds "
                                  "(0 or more).")
-            return
+            return None
         if not is_duration(self.measure_var.get()):
             messagebox.showerror("Invalid value",
                                  "Measurement pause must be a number of "
                                  "seconds (0 or more).")
-            return
-        preset = {
+            return None
+        return {
             "rotation": degrees,
             "ch4_volume": self.ch4_var.get().strip(),
             "mix_pause": self.mix_var.get().strip(),
             "measure_pause": self.measure_var.get().strip(),
+            "tubing": float(self.tubing_var.get()),
+            "direction": self.direction_var.get(),
             "rows": [self._row_data(i) for i in range(self._num_steps())
                      if not self._step_is_empty(i)]}
+
+    def on_save(self):
+        name = self.current_preset.get()
+        preset = self._preset_from_form()
+        if preset is None:
+            return
         try:
             self.store.save(name, preset)
         except sqlite3.Error as exc:
@@ -1002,15 +1150,47 @@ class App(tk.Tk):
             c["locked"] = True
         self._refresh_consts()
         print(f"[gui] saved changes to {name}")
+        self.save_btn.configure(state="disabled")
+        self._submit(self._apply_pump_settings(float(preset["tubing"]),
+                                               preset["direction"]),
+                     lambda _result: self._pump_settings_applied(name),
+                     lambda exc: self._pump_settings_failed(name, exc))
+
+    def _pump_settings_applied(self, name):
+        self._update_header()
         messagebox.showinfo("Saved", f"Changes saved to {name}.")
 
-    # -- initialize: pump setup + arm HOME/rotate, all on the asyncio thread --
-    async def _init_hardware(self, degrees):
+    def _pump_settings_failed(self, name, exc):
+        self._update_header()
+        messagebox.showerror(
+            "Pump settings",
+            f"Changes to {name} were saved, but the pump tubing size and "
+            f"direction could not be updated:\n{exc}")
+
+    def _create_pump(self):
+        if MOCKPUMP:
+            from ismatec.mock import Pump
+        else:
+            from ismatec import Pump
+        self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+
+    async def _apply_pump_settings(self, diameter, direction):
+        """Set the tubing size and rotation direction of all channels."""
+        if self.pump is None:
+            self._create_pump()
+        for channel in self.pump.channels:
+            await self.pump.set_tubing_inner_diameter(channel, diameter)
+            await self.pump.set_rotation(channel, DIRECTIONS[direction])
+
+    # -- hardware set-up: pump + arm HOME/rotate, all on the asyncio thread ---
+    async def _init_hardware(self, degrees, tubing_diameter, direction):
         if self.controller is None:
             # Create inside the running loop (the mock grabs the current loop).
-            self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+            if self.pump is None:
+                self._create_pump()
             self.controller = DilutionController(self.pump)
         await self.controller.setup()
+        await self._apply_pump_settings(tubing_diameter, direction)
 
         # Arm code is blocking serial I/O, so run it in a thread.
         def arm_sequence():
@@ -1019,25 +1199,6 @@ class App(tk.Tk):
             self.arm.rotate(degrees)
         await asyncio.to_thread(arm_sequence)
 
-    def on_initialize(self):
-        degrees = to_degrees(self.rotation.get())
-        if degrees is None:
-            messagebox.showerror("Invalid rotation", self._rotation_error())
-            return
-        if not self._end_session("Initialize",
-                                 "Save the current session before starting "
-                                 "a new one?"):
-            return
-        self.session = None                 # saved or discarded above
-        self._init_rotation = degrees
-
-        self.init_btn.configure(state="disabled")
-        self.initialized = False
-        self._set_busy(True)
-        self.status.set("Initializing...")
-        self._submit(self._init_hardware(degrees),
-                     self._init_done, self._init_failed)
-
     def _rotation_error(self):
         return (f"Rotation '{self.rotation.get().strip()}' is not valid.\n"
                 f"It must be a whole number of degrees from {ARM_MIN_DEG} "
@@ -1045,15 +1206,16 @@ class App(tk.Tk):
 
     def _init_failed(self, exc):
         self._set_busy(False)
-        self.init_btn.configure(state="normal")
-        self.status.set("Initialization failed")
-        messagebox.showerror("Initialization failed", str(exc))
+        self.status.set("Setting up the pump and arm failed \u2014 no session")
+        messagebox.showerror("New session",
+                             f"Could not set up the pump and arm, so no "
+                             f"session was started:\n{exc}")
 
     def _init_done(self, _result):
         self.current_step = 0
         self.initialized = True
         self._start_session()
-        self.status.set("Ready")
+        self.status.set("New session started")
         self._set_busy(False)
 
     def _set_busy(self, busy, waiting=False):
@@ -1090,7 +1252,8 @@ class App(tk.Tk):
             return
         self._duplicate_into_next_row()
         amounts = list(step) if kind != "wait" else [0.0] * 4
-        self._step_log = {"timestamp": now_iso(), "type": kind, "ch": amounts}
+        self._step_log = {"timestamp": now_iso(), "type": kind, "ch": amounts,
+                          "wait": seconds if kind == "wait" else None}
 
         if kind == "wait":
             self._start_wait(f"Step #{n}: waiting...", seconds)
@@ -1183,23 +1346,27 @@ class App(tk.Tk):
         messagebox.showerror("Pump error", str(exc))
 
     def _step_done(self, _result):
+        saved = True
         if self.session is not None and self._step_log is not None:
             self.session["steps"].append(self._step_log)
+            saved = self._save_session()    # the session is saved every step
+            if not saved:
+                self.auto_run = False       # don't run steps that aren't logged
         self._step_log = None
         self.stopping = False
-        self.status.set(f"Step #{self.current_step + 1} done")
+        self.status.set(f"Step #{self.current_step + 1} done"
+                        + ("" if saved else " \u2014 not saved"))
         self.current_step += 1              # lock finished row, advance
         at_end = self.current_step >= self._num_steps()
         if at_end:
             if self.auto_run:
                 self.status.set("All steps done")
             self.auto_run = False
-            self.init_btn.configure(state="normal")
         self._set_busy(False)
         if self.auto_run:
             self._run_next_auto()
 
-    # -- sessions: Initialize .. New session / Exit ---------------------------
+    # -- sessions: New session .. New session / Load / Exit --------------------
     def _start_session(self):
         """New session whose header is the preset as it is used now."""
         self.session = {
@@ -1244,6 +1411,22 @@ class App(tk.Tk):
             return self._save_session()     # stay if saving failed
         return True                         # No: discard
 
+    def _confirm_end_session(self, title, what):
+        """`what` (e.g. "Exiting ends the current session.") is about to end
+        the session. Always warn while a session is running, even though it
+        is saved after every step. If an automatic save failed, offer to save
+        first instead. Returns True to go ahead."""
+        if self.session is None:
+            return True
+        if self._session_unsaved():
+            return self._end_session(
+                title, what + "\n\nThe last steps could not be saved "
+                "automatically. Try to save them now?")
+        if self.session["steps"]:
+            what += " It is saved."
+        return messagebox.askokcancel(title, what + "\n\nContinue?",
+                                      icon="warning", parent=self)
+
     def _update_session_ui(self):
         if self.session is None:
             text = "No session"
@@ -1254,28 +1437,153 @@ class App(tk.Tk):
                 text += " \u00b7 " + ("unsaved" if self._session_unsaved()
                                       else "saved")
         self.session_label.configure(text=text)
-        self.save_session_btn.configure(
-            state="normal" if self._session_unsaved() else "disabled")
         self.new_session_btn.configure(
-            state="normal" if self.initialized and not self.busy
-            else "disabled")
-
-    def on_save_session(self):
-        if self._session_unsaved():
-            self._save_session()
+            state="normal" if not self.busy else "disabled")
 
     def on_new_session(self):
-        """Start a new session with the same hardware set-up, and run the steps
-        again from the first one."""
-        if not self._end_session("New session", "Save the current session "
-                                 "before starting a new one?"):
+        """End the current session, set up the pump, home the arm and turn it
+        to the preset's rotation, then start a new session from step 1."""
+        degrees = to_degrees(self.rotation.get())
+        if degrees is None:                 # check before ending anything
+            messagebox.showerror("Invalid rotation", self._rotation_error())
             return
+        if not self._confirm_end_session(
+                "New session", "Starting a new session ends the current one."):
+            return
+        self.session = None
+        self._init_rotation = degrees
         self.auto_run = self.stopping = False
-        self._start_session()
-        self.current_step = 0
-        self.status.set("New session started")
-        self._refresh_rows()
-        self._update_run_state()
+        self.initialized = False
+        self._set_busy(True)
+        self.status.set("Setting up the pump and arm...")
+        self._submit(self._init_hardware(degrees, float(self.tubing_var.get()),
+                                         self.direction_var.get()),
+                     self._init_done, self._init_failed)
+
+    # -- log explorer: browse saved sessions, open or export them -------------
+    def on_log_explorer(self):
+        """Dialog listing the saved sessions. Open shows a session's log in
+        the system's text editor; Export to CSV saves it where the user picks
+        in a save dialog."""
+        try:
+            sessions = self.store.list_sessions()
+        except sqlite3.Error as exc:
+            messagebox.showerror("Log explorer",
+                                 f"Could not read the sessions:\n{exc}")
+            return
+        dlg = tk.Toplevel(self, background=BG)
+        dlg.title("Log explorer")
+        dlg.transient(self)
+        dlg.minsize(420, 320)
+        card = ttk.Frame(dlg, style="Card.TFrame", padding=16)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(2, weight=1)
+        ttk.Label(card, text="Saved sessions", style="Heading.Card.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(card, text="Newest first. Sessions without steps are not "
+                  "listed.",
+                  style="Muted.Card.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        tree = ttk.Treeview(card, columns=("name",), show="headings",
+                            selectmode="browse", height=12)
+        tree.heading("name", text="Session", anchor="w")
+        tree.column("name", anchor="w", width=360)
+        scroll = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=2, column=0, sticky="nsew")
+        scroll.grid(row=2, column=1, sticky="ns")
+        for sid, started_at, preset in sessions:
+            name = session_log.session_name(
+                {"started_at": started_at, "preset_name": preset})
+            tree.insert("", "end", iid=str(sid), values=(name,))
+        if not sessions:
+            tree.insert("", "end", iid="none", values=("No saved sessions",),
+                        tags=("empty",))
+            tree.tag_configure("empty", foreground=MUTED)
+
+        buttons = ttk.Frame(card, style="Plain.Card.TFrame")
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Button(buttons, text="Close", command=dlg.destroy).pack(side="right")
+        export_btn = ttk.Button(buttons, text="Export to CSV\u2026",
+                                state="disabled")
+        export_btn.pack(side="right", padx=(0, 8))
+        open_btn = ttk.Button(buttons, text="Open", style="Accent.TButton",
+                              state="disabled")
+        open_btn.pack(side="left")
+
+        def selected():
+            sel = [i for i in tree.selection() if i != "none"]
+            if not sel:
+                return None
+            try:
+                return self.store.load_session(int(sel[0]))
+            except sqlite3.Error as exc:
+                messagebox.showerror("Log explorer",
+                                     f"Could not read the session:\n{exc}",
+                                     parent=dlg)
+                return None
+
+        def on_select(_event=None):
+            ok = any(i != "none" for i in tree.selection())
+            for b in (open_btn, export_btn):
+                b.configure(state="normal" if ok else "disabled")
+
+        def do_open(_event=None):
+            session = selected()
+            if session is None:
+                return
+            folder = Path(tempfile.gettempdir()) / "reglo_logs"
+            path = folder / (session_log.safe_filename(
+                session_log.session_name(session)) + ".txt")
+            try:
+                folder.mkdir(exist_ok=True)
+                path.write_text(session_log.to_text(session), encoding="utf-8")
+                session_log.open_with_system(str(path))
+            except OSError as exc:
+                messagebox.showerror("Open log",
+                                     f"Could not open the log:\n{exc}",
+                                     parent=dlg)
+
+        def do_export():
+            session = selected()
+            if session is None:
+                return
+            name = session_log.safe_filename(session_log.session_name(session))
+            # The save dialog asks before replacing an existing file itself.
+            chosen = filedialog.asksaveasfilename(
+                parent=dlg, title="Export to CSV",
+                initialdir=self._export_dir or Path.cwd(),
+                initialfile=f"{name}.csv", defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*")])
+            if not chosen:
+                return                      # cancelled
+            path = Path(chosen)
+            try:
+                session_log.write_csv(session, path)
+            except OSError as exc:
+                messagebox.showerror("Export to CSV",
+                                     f"Could not export the session:\n{exc}",
+                                     parent=dlg)
+                return
+            self._export_dir = path.parent  # start there next time
+            messagebox.showinfo("Export to CSV",
+                                f"Exported to\n{path}", parent=dlg)
+
+        open_btn.configure(command=do_open)
+        export_btn.configure(command=do_export)
+        tree.bind("<<TreeviewSelect>>", on_select)
+        tree.bind("<Double-1>", do_open)
+        tree.bind("<Return>", do_open)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        if sessions:
+            tree.focus_set()
 
     # -- run all: go through the steps without manual interaction -------------
     def on_run_all(self):
@@ -1305,8 +1613,12 @@ class App(tk.Tk):
         self.on_run_step()
 
     def on_exit(self):
-        if not self._end_session("Exit", "Save the current session before "
-                                 "exiting?"):
+        if self.grab_current() is not None:
+            # A modal dialog (e.g. rename) is open and still needs the
+            # database; the window's close button can arrive anyway.
+            return
+        if not self._confirm_end_session("Exit",
+                                         "Exiting ends the current session."):
             return
         self.arm.close()
         self.store.close()
@@ -1315,4 +1627,14 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    args = parse_args()
+    DEBUGGING = args.enable_logging
+    MOCKPUMP = args.mock_pump
+    MOCKARM = args.mock_arm
+    if DEBUGGING:
+        logging.disable(logging.NOTSET)
+        logging.basicConfig(level=logging.DEBUG, force=True)
+        logging.getLogger("ismatec").setLevel(logging.DEBUG)
+    else:
+        logging.disable(logging.CRITICAL)
     App().mainloop()

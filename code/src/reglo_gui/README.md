@@ -201,16 +201,11 @@ exactly as entered.
 
 ### To do
 
-- [ ] **Pause mid-step**, in both single-step and Run all mode.  The pump
-  does not support this well: it has no pause command, and stopping a
-  channel loses its count of how much it has pumped. Resuming would
-  have to estimate the delivered volume (flow rate × running time) and
-  restart each channel with the remaining volume.
-- [ ] **Restore a saved session.**
-- [ ] **Export logs to XLS** from the log explorer.
-- [ ] **Show progress while pumping**, using the pump's `^U` event messages.
-- [ ] **Program options**, saved in SQLite: for example time as min:sec or
-  seconds, and volumes in ml or µl.
+* [ ] **Log preset changes** if changes are made to preset (e.g. mixing
+      time) during a trial run, these changes should also noted in the
+      session logs. It could be by insering a INFO step with only it's
+      'Comment' column populated. This way we will note break the csv
+      format, and we only need to add a 'Comment'/'Notes' column.
 * [ ] **Units** write ml (milliliter) next to each channel header. E.g. 1
       (ml), 2 (ml), etc.
 * [ ] **Repeat** make it possible to repeat a selected X, or step X og
@@ -229,8 +224,21 @@ exactly as entered.
   middle. Already run steps cannot be deleted, but the repeat and
   insert X times are still available.
 
-### Shelved
+### Shelved/archived
 
-- [ ] Show total volume pumped for each channel
-- [ ] Optional labels for channels should be part of presets
-- [ ] Reopen a specific session and add to it if finished prematurely.
+Shelved/archived if not deemed important for prototype.
+
+- [ ] **Restore a session** if application crashed.
+- [ ] **Show progress while pumping**, using the pump's `^U` event messages.
+- [ ] **Program options**, saved in SQLite: for example time as min:sec or
+      seconds, and volumes in ml or µl.
+- [ ] **Export logs to XLS** from the log explorer. Already have export to
+      CSV, which is readily available for import to Excel.
+- [ ] **Pause mid-step**, in both single-step and Run all mode.  The pump
+      does not support this well: it has no pause command, and stopping a
+      channel loses its count of how much it has pumped. Resuming would
+      have to estimate the delivered volume (flow rate × running time) and
+      restart each channel with the remaining volume.
+- [ ] **Show total volume pumped** for each channel
+- [ ] **Optional labels** for channels should be part of presets
+- [ ] **Reopen a specific session** and add to it if finished prematurely.

@@ -228,3 +228,9 @@ exactly as entered.
   after current step'. This way you can add any missing steps in the
   middle. Already run steps cannot be deleted, but the repeat and
   insert X times are still available.
+
+### Shelved
+
+- [ ] Show total volume pumped for each channel
+- [ ] Optional labels for channels should be part of presets
+- [ ] Reopen a specific session and add to it if finished prematurely.

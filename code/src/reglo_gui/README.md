@@ -67,7 +67,9 @@ when a session starts:
   USB ID. Each candidate is used only once it answers with `BOOTED` or
   `PONG`.
 - **Pump:** the USB serial port that isn't the arm and answers the
-  pump's version query (a USB-C dock can show up as a serial port too).
+  pump's version query (a USB-C dock can also show up as a serial port).
+  If the pump is off, New session fails with "No pump found" instead of
+  hanging.
 
 At startup the app prints every serial port it sees. If it can't decide,
 the error lists the ports; pick one with `--pump_port` / `--arm_port`.

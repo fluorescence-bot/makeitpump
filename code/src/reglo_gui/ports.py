@@ -7,7 +7,7 @@ COM3 on Windows, so ports are found by their USB IDs instead of by name:
   or an official Arduino. Matched by USB ID; reglo_gui.ArmController then
   checks each candidate by its BOOTED/PONG reply.
 - The pump's USB ID is not known, so it is the one other USB serial port
-  (if there are several, the one that answers the pump's version query).
+  that answers the pump's version query.
   Its ID can be added to PUMP_VIDS once someone has looked it up
   (`python -m serial.tools.list_ports -v` with the pump plugged in).
 
@@ -104,9 +104,9 @@ def answers_like_pump(device):
 
 def find_pump(ports=None, arm_port=None, probe=answers_like_pump):
     """Port of the pump: one that is known to be the pump, or else the one
-    USB serial port that is not the arm (`arm_port`, or any arm board). If
-    several ports could be it (e.g. a USB-C dock also shows up as a serial
-    port), the one that answers `probe` wins.
+    USB serial port that is not the arm (`arm_port`, or any arm board) and
+    answers `probe`. (A USB-C dock can also show up as a serial port; and
+    the pump library waits forever for a port that doesn't answer.)
     Raises PortError if there is none or several."""
     if ports is None:
         ports = list_ports.comports()
@@ -115,6 +115,11 @@ def find_pump(ports=None, arm_port=None, probe=answers_like_pump):
     if known:
         return _one(known, "pump", ports)
     others = [p for p in usb if p.device != arm_port and not _is_arm(p)]
-    if len(others) > 1:
-        others = [p for p in others if probe(p.device)] or others
-    return _one(others, "pump", ports)
+    answering = [p for p in others if probe(p.device)]
+    if others and not answering:
+        names = ", ".join(p.device for p in others)
+        raise PortError(f"No pump found: no port answered ({names}). "
+                        f"Is the pump on and plugged in?\n"
+                        f"To use a port anyway, choose it with --pump_port.\n\n"
+                        f"Serial ports:\n{describe_all(ports)}")
+    return _one(answering, "pump", ports)

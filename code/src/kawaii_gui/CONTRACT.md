@@ -265,7 +265,7 @@ Presets saved with a per-channel `s` (seconds) or `speed` load with those fields
 
 ### Pump detection and logging
 There is no `DEBUGGING` switch. Which pump is used is detected, and debug logging is a separate runtime toggle.
-- `pump_connect()`: (re)detects the pump, on the calling thread, and answers with `PumpInfo`. It tries the real pump at `hardware.PUMP_ADDRESS`; if there is none (port missing, or no answer within `PUMP_TIMEOUT_S` = 4 s; the controller `setup()` then gets `PUMP_SETUP_TIMEOUT_S` = 15 s, as the real pump takes ~4 s for it) it uses the `ismatec` mock pump and says so in `message` ("No pump found on <address> - using the mock pump"). It drops any pump it had before (stopping it first) and runs the controller `setup()` again. Refused (`ok: false`, `"Busy"`, current `PumpInfo`) while anything runs. Never hangs: a pump that doesn't answer counts as not found.
+- `pump_connect()`: (re)detects the pump, on the calling thread, and answers with `PumpInfo`. It tries the real pump at `hardware.PUMP_ADDRESS`, or, when that is `None` (the default), on every USB serial port that isn't a known board and answers the pump's `1#` query; if there is none (port missing, or no answer within `PUMP_TIMEOUT_S` = 4 s; the controller `setup()` then gets `PUMP_SETUP_TIMEOUT_S` = 15 s, as the real pump takes ~4 s for it) it uses the `ismatec` mock pump and says so in `message` ("No pump found on <address> - using the mock pump"). It drops any pump it had before (stopping it first) and runs the controller `setup()` again. Refused (`ok: false`, `"Busy"`, current `PumpInfo`) while anything runs. Never hangs: a pump that doesn't answer counts as not found.
 - The UI calls `pump_connect()` at startup, then `get_tubing()`. A **🔌 Redetect pump** button calls them again (for a pump plugged in after launch); it is disabled while running or paused. While `mode` is `mock` the UI shows `message` in a visible "mock pump" badge.
 - A pump step (`run_step`), `get_tubing` or `set_tubing` before any `pump_connect()` detects the pump first, the same way.
 - `set_pump_logging(on)`: turns `ismatec` debug logging (`logging.getLogger('ismatec')` at DEBUG, else WARNING; logs go to the terminal) on or off at runtime and answers with the current `PumpInfo`. Allowed while running. A **🐞 Log** toggle button in the UI shows and flips it. Default off, unless the app is started with `--pump-log`.
@@ -314,7 +314,7 @@ A robot turns the cuvette (the "final solution" mug in the scene) to an absolute
 ## hardware.py (pump control)
 ```python
 FORCE_MOCK = False        # True: always the `ismatec` mock pump (tests); False: detect the real pump, else the mock
-PUMP_ADDRESS = "/dev/ttyACM0"
+PUMP_ADDRESS = None       # serial port, e.g. "COM3"; None: try every USB serial port that answers like a pump
 FLOW_ML_PER_S = 1.0       # estimated flow per channel, placeholder until calibrated (estimates only)
 
 def run_step(volumes: dict[str, float]) -> None: ...   # mL per channel A-D; blocks until done or stopped

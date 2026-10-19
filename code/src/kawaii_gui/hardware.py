@@ -13,7 +13,10 @@ import concurrent.futures
 import logging
 import threading
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
+import serial
+from serial.tools import list_ports
 
 import rotator
 from dilution_controller import DilutionController
@@ -30,8 +33,15 @@ _ismatec_log.setLevel(logging.WARNING)
 # True: never look for the real pump, always use the ismatec mock (tests set this).
 FORCE_MOCK = False
 
-# Use COMx on Windows. NOTE: must be a different port than the cuvette rotator.
-PUMP_ADDRESS = "/dev/ttyACM0"
+# Serial port of the pump, e.g. "COM3" or "/dev/ttyACM0". None: try every USB
+# serial port (COMx on Windows, /dev/cu.usbmodem* on macOS, /dev/ttyACM* on
+# Linux) except the cuvette rotator and Arduino boards, and use the one that
+# answers like a pump.
+PUMP_ADDRESS: Optional[str] = None
+
+# USB vendor IDs of boards that are never the pump (Arduino and its clones'
+# USB chips: CH340, FTDI, CP210x; Adafruit's Trinket is found by rotator.py).
+NOT_PUMP_VIDS = {0x2341, 0x2A03, 0x1A86, 0x0403, 0x10C4, 0x239A}
 
 # Pump channel for each mixer channel: A/B/C pump into the bowl, D pumps it out.
 CHANNELS = {"A": 1, "B": 2, "C": 3, "D": 4}
@@ -128,6 +138,17 @@ def _build_real(holder: list, result: concurrent.futures.Future) -> None:
 _address_to_try = PUMP_ADDRESS
 
 
+def _candidates() -> List[str]:
+    """The ports the pump may be on: PUMP_ADDRESS if set, else every USB serial
+    port that isn't a known board (skipping macOS' /dev/tty.* twin of each
+    /dev/cu.* port)."""
+    if PUMP_ADDRESS is not None:
+        return [PUMP_ADDRESS]
+    return sorted(p.device for p in list_ports.comports()
+                  if p.vid is not None and p.vid not in NOT_PUMP_VIDS
+                  and not p.device.startswith("/dev/tty."))
+
+
 def _real_port_missing(address: str) -> bool:
     # Only serial device paths can be checked; COMx and host:port are tried as-is.
     if address.startswith("/dev") and not os.path.exists(address):
@@ -139,10 +160,31 @@ def _real_port_missing(address: str) -> bool:
         return False
 
 
+def _answers_like_pump(address: str) -> bool:
+    """True if `address` answers the pump's version query ('1#') within a second.
+    Needed because the library doesn't fail on a port that never answers (e.g. a
+    USB-C dock's): its queries just come back empty. Always closes the port."""
+    try:
+        with serial.Serial(address, 9600, timeout=1) as ser:
+            ser.reset_input_buffer()
+            ser.write(b"1#\r")
+            return bool(ser.readline().strip())
+    except (serial.SerialException, OSError):
+        return False
+
+
 def _try_real() -> bool:
-    """Connect to the real pump and set the controller up. False if there is none."""
+    """Connect to the real pump on the first candidate port that answers. False
+    if there is none."""
+    if PUMP_ADDRESS is not None:
+        return _try_real_at(PUMP_ADDRESS)
+    return any(_answers_like_pump(a) and _try_real_at(a) for a in _candidates())
+
+
+def _try_real_at(address: str) -> bool:
+    """Connect to the real pump at `address` and set the controller up. False if
+    it isn't there."""
     global pump, controller, mode, _address, _message, _hw, _address_to_try
-    address = PUMP_ADDRESS
     if _real_port_missing(address):
         return False
     _address_to_try = address
@@ -172,7 +214,7 @@ def _try_real() -> bool:
 async def _make_mock() -> None:
     global pump, controller, mode, _address, _message, _hw
     # Create inside the running loop (the mock grabs the current loop).
-    new_pump = MockPump(PUMP_ADDRESS, debug=False)
+    new_pump = MockPump(PUMP_ADDRESS or "mock", debug=False)
     new_controller = DilutionController(new_pump)
     await new_controller.setup()
     pump, controller, _hw = new_pump, new_controller, None
@@ -180,7 +222,9 @@ async def _make_mock() -> None:
     if FORCE_MOCK:
         _message = "Using the mock pump"
     else:
-        _message = f"No pump found on {PUMP_ADDRESS} - using the mock pump"
+        tried = ", ".join(_candidates())
+        where = f"on {tried}" if tried else "(no USB serial ports)"
+        _message = f"No pump found {where} - using the mock pump"
 
 
 async def _drop_pump() -> None:
@@ -203,7 +247,7 @@ async def _drop_pump() -> None:
 
 
 def connect() -> dict:
-    """(Re)detect the pump: the real one at PUMP_ADDRESS, else the mock. Drops the
+    """(Re)detect the pump: the real one (see _candidates), else the mock. Drops the
     old pump first. Blocks the calling thread (not the asyncio thread) for at most
     a few PUMP_TIMEOUT_S; never hangs. Returns `info()`."""
     with _connect_lock:

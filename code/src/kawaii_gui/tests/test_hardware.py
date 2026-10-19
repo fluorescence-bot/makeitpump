@@ -86,6 +86,24 @@ def test_rotator_port_is_never_taken_for_the_pump(monkeypatch, tmp_path):
     assert str(port) in info["message"]
 
 
+def test_auto_detect_skips_boards_and_ports_that_dont_answer(monkeypatch):
+    def port(device, vid):
+        return types.SimpleNamespace(device=device, vid=vid)
+    ports = [port("COM1", None), port("COM3", 0x057E), port("COM4", 0x1A86),
+             port("COM5", 0x239A), port("COM6", 0x1234)]
+    monkeypatch.setattr(hardware, "FORCE_MOCK", False)
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", None)
+    monkeypatch.setattr(hardware.list_ports, "comports", lambda: ports)
+    assert hardware._candidates() == ["COM3", "COM6"]
+    probed = []
+    monkeypatch.setattr(hardware, "_answers_like_pump",
+                        lambda a: probed.append(a) or a == "COM6")
+    tried = []
+    monkeypatch.setattr(hardware, "_try_real_at", lambda a: tried.append(a) or True)
+    assert hardware._try_real()
+    assert probed == ["COM3", "COM6"] and tried == ["COM6"]
+
+
 def test_detection_does_not_hang_on_silent_pump(monkeypatch, tmp_path):
     port = tmp_path / "ttyFAKE"
     port.write_text("")

@@ -17,11 +17,11 @@ from tkinter import ttk, messagebox, filedialog
 from tkinter import font as tkfont
 
 import serial  # pip install pyserial
-from serial.tools import list_ports
 
 from dilution_controller import DilutionController
 from data_store import DataStore
 from ismatec.util import Rotation, Tubing
+import ports
 import session_log
 
 DEBUGGING = False
@@ -37,11 +37,13 @@ def parse_args(argv=None):
                         help="use a mock pump instead of the real pump")
     parser.add_argument("--mock_arm", action="store_true",
                         help="use a mock arm instead of the real arm")
-    parser.add_argument("--pump_port", default=PUMP_ADDRESS,
-                        help=f"serial port of the pump (default {PUMP_ADDRESS})")
-    parser.add_argument("--arm_port", default=SERIAL_PORT,
-                        help="serial port of the rotator arm "
-                             "(default: find the Arduino Nano automatically)")
+    parser.add_argument("--pump_port", metavar="PORT", default=PUMP_ADDRESS,
+                        help="serial port of the pump, e.g. COM3 or "
+                             "/dev/ttyACM0 (default: found automatically)")
+    parser.add_argument("--arm_port", metavar="PORT", default=SERIAL_PORT,
+                        help="serial port of the arm, e.g. COM4 or "
+                             "/dev/ttyUSB0 (default: find the Arduino Nano "
+                             "automatically)")
     return parser.parse_args(argv)
 
 # ---- Configuration ---------------------------------------------------------
@@ -81,27 +83,32 @@ NA_BG = "#e5e7eb"         # field that doesn't apply to the row's step type
 HOVER_BG = "#e8edf3"
 BUTTON_BG = "#f6f8fa"
 
-# ---- Pump configuration ------------------------------------------------------
-# Use COMx on Windows. NOTE: must be a different port than the Arduino arm.
-PUMP_ADDRESS = "/dev/ttyACM0"
+# ---- Serial ports ------------------------------------------------------------
+# None = find the port automatically (see ports.py), on Linux, macOS and
+# Windows alike. Set with --pump_port / --arm_port, e.g. COM3 or /dev/ttyACM0.
+PUMP_ADDRESS = None
+SERIAL_PORT = None
 
 # ---- Arduino arm configuration ----------------------------------------------
 # The arm is an Arduino Nano running ../cuvette_rotater/cuvette_rotater.ino.
-SERIAL_PORT = None        # None = find the Nano by USB ID, or e.g. "/dev/cu.usbserial-110"
 SERIAL_BAUD = 115200      # must match Serial.begin(...) in the Arduino sketch
 ARM_BOOT_TIMEOUT = 3.0    # the Nano restarts when the port opens, then says BOOTED
 ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
-# USB IDs a Nano (or clone) can show up with: (VID, PID), None = any PID
-ARM_USB_IDS = [(0x1A86, 0x7523), (0x1A86, 0x55D4), (0x0403, 0x6001),
-               (0x2341, None), (0x2A03, None)]
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 # ---- Presets and session logs ---------------------------------------------------
 # Stored in an SQLite database next to this file. DEFAULT_PRESETS only seed an
 # empty database (the first run); PRESETS is the in-memory copy, loaded from
 # the database at startup and written through to it on Save and rename.
-DB_PATH = Path(__file__).with_name("data.db")
-OLD_DB_PATH = Path(__file__).with_name("presets.db")   # name before sessions
-ICON_PATH = Path(__file__).with_name("pump-arm-icon.png")
+# In an .exe (PyInstaller), __file__ is in a temporary folder that is deleted
+# on exit, so the database goes next to the .exe; the icon is bundled with it.
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+else:
+    APP_DIR = BUNDLE_DIR = Path(__file__).parent
+DB_PATH = APP_DIR / "data.db"
+OLD_DB_PATH = APP_DIR / "presets.db"   # name before sessions
+ICON_PATH = BUNDLE_DIR / "pump-arm-icon.png"
 # X11 class name (WM_CLASS). GNOME uses it to find the app's .desktop file,
 # which gives the dock / Alt-Tab icon: see install_desktop_entry.py.
 WM_CLASS = "Reglogui"          # Tk keeps this as the class, "reglogui" as name
@@ -173,22 +180,22 @@ class ArmController:
     or an <ERROR:...> line. Blocking: call from a worker thread."""
 
     def __init__(self, port, baud, timeout):
-        self.port, self.baud, self.timeout = port, baud, timeout
+        self.port = port        # None: find it when connecting
+        self.baud, self.timeout = baud, timeout
         self.ser = None
 
     def connect(self):
         if self.ser is not None and self.ser.is_open:
             return
         if self.port is not None:
-            ports = [self.port]
+            candidates = [self.port]
         else:
-            ports = [p.device for p in list_ports.comports()
-                     if any(p.vid == vid and (pid is None or p.pid == pid)
-                            for vid, pid in ARM_USB_IDS)]
-            if not ports:
+            candidates = ports.arm_candidates()
+            if not candidates:
                 raise ArmError("Rotator arm not found. Is the Arduino Nano "
-                               "plugged in? (Or pass --arm_port.)")
-        for port in ports:
+                               "plugged in? (Or pass --arm_port.)\n\n"
+                               f"Serial ports:\n{ports.describe_all()}")
+        for port in candidates:
             try:
                 self.ser = serial.Serial(port, self.baud, timeout=0.2)
             except serial.SerialException as exc:
@@ -197,9 +204,11 @@ class ArmController:
                     raise ArmError(f"Could not open {port}:\n{exc}")
                 continue
             if self._handshake():
+                print(f"[arm] using {port}")
                 return
             self.close()
-        raise ArmError(f"No rotator arm answered on {', '.join(ports)}.")
+        raise ArmError(f"No rotator arm answered on {', '.join(candidates)}."
+                       f"\n\nSerial ports:\n{ports.describe_all()}")
 
     def _handshake(self):
         """True once the Nano says BOOTED (it restarts when the port opens)
@@ -274,7 +283,11 @@ class ArmMock:
 class App(tk.Tk):
     def __init__(self):
         super().__init__(className=WM_CLASS)
-        self.title("Reglo ICC Pump Control")
+        mocks = [name for name, on in (("pump", MOCKPUMP), ("arm", MOCKARM))
+                 if on]
+        self.title("Reglo ICC Pump Control" + (
+            f" \u2014 MOCK {' + '.join(mocks)} (not the real hardware)"
+            if mocks else ""))
         try:
             # Keep a reference, or Tk drops the image. True: dialogs too.
             self._icon = tk.PhotoImage(file=ICON_PATH)
@@ -1214,9 +1227,18 @@ class App(tk.Tk):
     def _create_pump(self):
         if MOCKPUMP:
             from ismatec.mock import Pump
+            address = PUMP_ADDRESS or "mock"
         else:
             from ismatec import Pump
-        self.pump = Pump(PUMP_ADDRESS, debug=DEBUGGING)
+            address = PUMP_ADDRESS
+            if address is None:
+                arm = None if MOCKARM else self.arm.port
+                try:
+                    address = ports.find_pump(arm_port=arm)
+                except ports.PortError as exc:
+                    raise RuntimeError(str(exc)) from None
+            print(f"[pump] using {address}")
+        self.pump = Pump(address, debug=DEBUGGING)
 
     async def _apply_pump_settings(self, diameter, direction):
         """Set the tubing size and rotation direction of all channels."""
@@ -1677,6 +1699,7 @@ if __name__ == "__main__":
     MOCKARM = args.mock_arm
     PUMP_ADDRESS = args.pump_port
     SERIAL_PORT = args.arm_port
+    print("[gui] serial ports:\n" + ports.describe_all())
     if DEBUGGING:
         logging.disable(logging.NOTSET)
         logging.basicConfig(level=logging.DEBUG, force=True)

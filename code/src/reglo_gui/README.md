@@ -12,7 +12,7 @@ steps that you run one at a time or all in one go.
 You need Python 3 with Tkinter.
 
 ```bash
-cd reglo_gui
+cd code/src/reglo_gui
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -48,14 +48,42 @@ flags:
 | `--enable_logging` | Show debug logging in the terminal. Off by default. |
 | `--mock_pump` | Use a mock pump. Off by default. |
 | `--mock_arm` | Use a mock arm. Off by default. |
-| `--pump_port`, `PUMP_ADDRESS` | Serial port of the pump, e.g. `/dev/ttyACM0`, `/dev/cu.usbmodem…` (macOS) or `COM3`. |
-| `--arm_port`, `SERIAL_PORT` | Serial port of the rotator arm (Arduino Nano). By default the Nano is found automatically: the first Arduino-like USB serial port that answers. |
-| `SERIAL_BAUD` | Baud rate of the rotator arm, 115200 (must match the sketch). |
-| `DB_PATH` | The database for presets and session logs, `data.db` next to `reglo_gui.py` by default. |
+| `--pump_port PORT`, `PUMP_ADDRESS` | Serial port of the pump, e.g. `COM3`, `/dev/ttyACM0` or `/dev/cu.usbmodem1101`. Found automatically by default. |
+| `--arm_port PORT`, `SERIAL_PORT` | Serial port of the rotator arm (Arduino Nano). Found automatically by default. |
+| `SERIAL_BAUD` | Baud rate of the rotator arm, 115200 (must match `Serial.begin` in the sketch). |
+| `DB_PATH` | The database for presets and session logs, `data.db` next to `reglo_gui.py` (or next to the `.exe`) by default. |
 | `DEFAULT_PRESETS` | The example presets put into a new, empty database. |
+
+With no flags the app uses the real pump and arm. When a mock is on, the
+window title says so.
+
+### Serial ports
+
+The same device is `/dev/ttyACM0` on Linux, `/dev/cu.usbmodem1101` on
+macOS and `COM3` on Windows, so `ports.py` finds the ports by USB ID
+when a session starts:
+
+- **Arm:** the Arduino Nano (CH340/FTDI clone or official Arduino), by
+  USB ID. Each candidate is used only once it answers with `BOOTED` or
+  `PONG`.
+- **Pump:** the USB serial port that isn't the arm and answers the
+  pump's version query (a USB-C dock can show up as a serial port too).
+
+At startup the app prints every serial port it sees. If it can't decide,
+the error lists the ports; pick one with `--pump_port` / `--arm_port`.
+To list them yourself: `python -m serial.tools.list_ports -v`.
 
 The rotator arm's serial protocol is described in
 [`cuvette_rotater/`](../cuvette_rotater/).
+
+### Building an .exe
+
+With PyInstaller, bundle the icon, e.g.
+`pyinstaller --onefile --windowed --add-data "pump-arm-icon.png;." reglo_gui.py`
+(use `:` instead of `;` on Linux/macOS). The database (`data.db`) is
+created next to the `.exe`, so presets and session logs survive restarts;
+copy an existing `data.db` there to keep its presets. `--windowed` hides
+the terminal, so the port listing is only visible without it.
 
 ## Using it
 
@@ -177,6 +205,9 @@ exactly as entered.
 ## Files
 
 - `reglo_gui.py`: the GUI, the arm controller and the default presets.
+- `ports.py`: finds the serial ports of the pump and the arm.
+- `tests/`: tests for the port detection and the arm protocol
+  (`pip install pytest`, then `python -m pytest`).
 - `data_store.py`: reads and writes presets and sessions in the SQLite
   database.
 - `session_log.py`: turns a saved session into a CSV file or a text log.

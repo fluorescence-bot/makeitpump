@@ -5,7 +5,7 @@ name: Build Windows exe
 # https://github.com/<owner>/<repo>/releases/latest
 on:
   push:
-    branches: [ main, worktree-org-exe-build ]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:

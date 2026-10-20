@@ -55,6 +55,7 @@ class Api:
         self._rotator = rotator.Rotator()
         self._rotator_state = "disconnected"
         self._connect_thread: Optional[threading.Thread] = None
+        self._connect_gen = 0           # bumped by each rotator_connect; an older one gives up
 
     def set_window(self, window: Any) -> None:
         """Set the pywebview window object for event delivery."""
@@ -246,22 +247,39 @@ class Api:
             raise
         self._emit_rotator("ready")
 
-    def rotator_connect(self) -> Dict[str, Any]:
-        """Find the rotator board, open it and home it, in the background.
-        Progress arrives as `rotator` events. Ignored while already connecting."""
-        if self._connect_thread is not None and self._connect_thread.is_alive():
-            return {"ok": True}
+    def list_ports(self) -> List[Dict[str, str]]:
+        """The USB serial ports, as {device, description}, for the port dropdowns."""
+        try:
+            return hardware.usb_ports()
+        except Exception:
+            return []
+
+    def rotator_connect(self, port: Optional[str] = None) -> Dict[str, Any]:
+        """Open the rotator board on `port` (None: find it by USB id) and home it,
+        in the background. Progress arrives as `rotator` events. A connect still
+        in progress (e.g. homing on the wrong port) is given up for this one."""
         if self._rotator_state == "moving":
             return {"ok": False, "error": "Cuvette rotator is busy"}
+        if port and port == hardware.info()["address"]:
+            return {"ok": False, "error": f"{port} is the pump's port"}
+        self._connect_gen += 1
+        gen, previous = self._connect_gen, self._connect_thread
+        cancelled = lambda: self._connect_gen != gen
 
         def _connect() -> None:
+            if previous is not None:
+                previous.join()     # it gives up within ~0.1 s
+            if cancelled():
+                return
             self._emit_rotator("homing")
             try:
-                port = self._rotator.connect()
-                self._emit_rotator("ready", f"Connected on {port}")
+                found = self._rotator.connect(port or None, should_cancel=cancelled)
+                if not cancelled():
+                    self._emit_rotator("ready", f"Connected on {found}")
             except rotator.RotatorError as e:
-                self._rotator.close()
-                self._emit_rotator("disconnected", str(e))
+                if not cancelled():
+                    self._rotator.close()
+                    self._emit_rotator("disconnected", str(e))
 
         self._connect_thread = threading.Thread(target=_connect, daemon=True)
         self._connect_thread.start()
@@ -439,12 +457,15 @@ class Api:
     def _pump_info(self, **extra: Any) -> Dict[str, Any]:
         return {**extra, **hardware.info()}
 
-    def pump_connect(self) -> Dict[str, Any]:
-        """(Re)detect the pump: the real one, else the mock. Refused while busy."""
+    def pump_connect(self, port: Optional[str] = None) -> Dict[str, Any]:
+        """(Re)detect the pump: the real one (on `port` if given), else the mock.
+        Refused while busy, and for the cuvette rotator's port."""
         if self._busy():
             return self._pump_info(ok=False, error="Busy")
+        if port and port == self._rotator.port:
+            return self._pump_info(ok=False, error=f"{port} is the cuvette rotator's port")
         try:
-            return {"ok": True, **hardware.connect()}
+            return {"ok": True, **hardware.connect(port or None)}
         except Exception as e:
             return self._pump_info(ok=False, error=f"Pump not available: {e}")
 

@@ -16,6 +16,7 @@ export interface Scene {
   setRotator(state: RotatorState, deg: number | null, target?: number, message?: string): void; // mug tilts to the angle
   onRotate(cb: (deg: number) => void): void;          // click on the robot while ready; deg = its "rotate to" field
   onRotatorConnect(cb: () => void): void;             // click on the robot while disconnected / in error
+  mountRobotControl(el: HTMLElement): void;           // e.g. the rotator's port dropdown, just above the robot
 }
 
 // Parse hex color to RGB
@@ -690,6 +691,16 @@ export function createScene(container: HTMLElement): Scene {
   angleObj.appendChild(angleField);
   inputsGroup.appendChild(angleObj);
 
+  // Slot for a control (the rotator's port dropdown) just above the robot, outside
+  // robotGroup so clicking it doesn't rotate or reconnect
+  const robotControlObj = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  robotControlObj.setAttribute("x", "690");
+  robotControlObj.setAttribute("y", "484");
+  robotControlObj.setAttribute("width", "105");
+  robotControlObj.setAttribute("height", "26");
+  robotControlObj.classList.add("rm-robot-control");
+  inputsGroup.appendChild(robotControlObj);
+
   // ---- Animation engine -------------------------------------------------
   // One requestAnimationFrame loop drives everything, using real frame time (dt),
   // so volumes are exact regardless of frame rate, and pausing simply skips updates.
@@ -965,6 +976,10 @@ export function createScene(container: HTMLElement): Scene {
 
     setTotals(totals: Record<Channel, number>) {
       for (const ch of ["A", "B", "C", "D"] as Channel[]) renderTotal(ch, totals[ch]);
+    },
+
+    mountRobotControl(el: HTMLElement) {
+      robotControlObj.replaceChildren(el);
     },
 
     setRotator(state: RotatorState, deg: number | null, target?: number, message?: string) {

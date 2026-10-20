@@ -65,7 +65,7 @@ Before the app connects, define `window.__onBackendEvent = (event) => {...}` at 
 
 **Async vs sync calls:**
 - **Calls that return immediately (run in background):** `run_program`, `manual_dose`, `manual_rotate`, `rotator_connect`. Check status events to know when they finish.
-- **Calls that block until done:** `pump_connect`, `get_tubing`, `set_tubing`. Wait for the Promise.
+- **Calls that block until done:** `pump_connect`, `get_tubing`, `set_tubing`, `list_ports`. Wait for the Promise.
 - **All other calls:** `pause_run`, `resume_run`, `stop` (return immediately with a status flag).
 
 **Busy refusals:** Only one thing runs at a time (program, manual dose or manual rotate). While one runs, `manual_dose`, `manual_rotate`, `pump_connect` and `set_tubing` return `{ ok: false, error: "Busy" }`, and `run_program` returns `{ ok: false, error: "A program is already running" }`. Treat any `ok: false` as "refused, nothing happened" and show `error`. Wait for the run to finish (status `ready`, `done`, `stopped` or `error`) before trying again.
@@ -215,6 +215,12 @@ export interface PumpInfo {
   logging: boolean;           // ismatec debug logging on/off
 }
 
+// A USB serial port, for the port dropdowns. device: "COM4", "/dev/ttyACM0", "/dev/cu.usbmodem1101".
+export interface SerialPort {
+  device: string;
+  description: string;        // what the OS calls it, e.g. "USB-SERIAL CH340"
+}
+
 // Tubing inner diameter set on the pump. It sets the pump's max flow (and so how
 // fast a dose runs), so it must match the tube that is fitted.
 export interface TubingInfo {
@@ -242,9 +248,10 @@ export interface BackendApi {
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
-  rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
+  list_ports(): Promise<SerialPort[]>;                                       // USB serial ports, sorted by device
+  rotator_connect(port?: string | null): Promise<{ ok: boolean; error?: string }>; // open the board on port (none: find it), HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
-  pump_connect(): Promise<PumpInfo>;                                         // (re)detect: real pump, else the mock; refused while busy
+  pump_connect(port?: string | null): Promise<PumpInfo>;                    // (re)detect on port (none: every port): real pump, else the mock; refused while busy
   set_pump_logging(on: boolean): Promise<PumpInfo>;                          // ismatec debug logging
   get_tubing(): Promise<TubingInfo>;
   set_tubing(mm: number): Promise<TubingInfo>;                              // every channel; refused while busy
@@ -266,6 +273,10 @@ Presets saved with a per-channel `s` (seconds) or `speed` load with those fields
 ### Pump detection and logging
 There is no `DEBUGGING` switch. Which pump is used is detected, and debug logging is a separate runtime toggle.
 - `pump_connect()`: (re)detects the pump, on the calling thread, and answers with `PumpInfo`. It tries the real pump at `hardware.PUMP_ADDRESS`, or, when that is `None` (the default), on every USB serial port that isn't a known board and answers the pump's `1#` query; if there is none (port missing, or no answer within `PUMP_TIMEOUT_S` = 4 s; the controller `setup()` then gets `PUMP_SETUP_TIMEOUT_S` = 15 s, as the real pump takes ~4 s for it) it uses the `ismatec` mock pump and says so in `message` ("No pump found on <address> - using the mock pump"). It drops any pump it had before (stopping it first) and runs the controller `setup()` again. Refused (`ok: false`, `"Busy"`, current `PumpInfo`) while anything runs. Never hangs: a pump that doesn't answer counts as not found.
+- `pump_connect(port)`: with a port (from `list_ports()`) it tries only that one, still requiring an answer to `1#` (so a wrong port gives the mock pump and "No pump found on <port> - …"); refused (`ok: false`) for the port the cuvette rotator has open. No port, `null` or `""` = auto, as above.
+- `list_ports()`: every USB serial port (`SerialPort[]`, sorted by `device`, macOS `/dev/tty.*` twins left out), including the known boards. `[]` in the browser mock.
+- `rotator_connect(port)`: opens the rotator board on `port` instead of finding it by USB id (none/`null`/`""`). A connect still in progress (e.g. homing on a wrong port) is given up for the new one, without a `disconnected` event for it. Refused (`ok: false`) while the rotator is `moving`, and for the pump's port.
+- **Port dropdowns:** the UI has one next to 🔌 Redetect pump (choosing a port redetects the pump on it) and one just above the robot (choosing a port reconnects the rotator on it; a click on an offline robot uses it too). Each starts at "Auto port" (`""`) and re-reads `list_ports()` when the mouse or focus comes to it. Both are disabled while a program, dose or rotate runs.
 - The UI calls `pump_connect()` at startup, then `get_tubing()`. A **🔌 Redetect pump** button calls them again (for a pump plugged in after launch); it is disabled while running or paused. While `mode` is `mock` the UI shows `message` in a visible "mock pump" badge.
 - A pump step (`run_step`), `get_tubing` or `set_tubing` before any `pump_connect()` detects the pump first, the same way.
 - `set_pump_logging(on)`: turns `ismatec` debug logging (`logging.getLogger('ismatec')` at DEBUG, else WARNING; logs go to the terminal) on or off at runtime and answers with the current `PumpInfo`. Allowed while running. A **🐞 Log** toggle button in the UI shows and flips it. Default off, unless the app is started with `--pump-log`.

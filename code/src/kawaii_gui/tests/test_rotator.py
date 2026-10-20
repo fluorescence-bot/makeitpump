@@ -275,3 +275,48 @@ class TestApi:
         connected_api.stop()
         assert wait_for(lambda: not connected_api._busy(), timeout=1)
         assert time.monotonic() - t0 < 1
+
+
+class HomesForever(FakeBoard):
+    """A board that never finishes homing (e.g. the wrong port was chosen)."""
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data.decode().strip())
+
+
+class TestChosenPort:
+    def test_driver_opens_the_chosen_port(self, board, monkeypatch):
+        opened = []
+        monkeypatch.setattr(rotator.serial, "Serial", lambda port, *a, **k: opened.append(port) or board.board)
+        r = rotator.Rotator()
+        assert r.connect("COM8") == "COM8" and r.port == "COM8"
+        assert opened == ["COM8"]
+        r.close()
+        assert r.port is None
+
+    def test_api_connects_on_the_chosen_port(self, board, window):
+        a = api.Api()
+        a.set_window(window)
+        assert a.rotator_connect("/dev/other") == {"ok": True}
+        assert wait_for(lambda: a._rotator_state == "ready")
+        assert rotator_events(window)[-1]["message"] == "Connected on /dev/other"
+
+    def test_new_port_replaces_a_connect_in_progress(self, board, window):
+        board.board = HomesForever()
+        a = api.Api()
+        a.set_window(window)
+        a.rotator_connect("/dev/wrong")
+        assert wait_for(lambda: board.board.written == ["HOME"])
+        board.board = FakeBoard()
+        a.rotator_connect("/dev/fake")
+        assert wait_for(lambda: a._rotator_state == "ready")
+        time.sleep(0.2)
+        assert [e["state"] for e in rotator_events(window)] == ["homing", "homing", "ready"]
+        assert a._rotator.port == "/dev/fake"
+
+    def test_refuses_the_pump_port(self, monkeypatch, window):
+        monkeypatch.setattr(api.hardware, "info", lambda: {"address": "COM5"})
+        a = api.Api()
+        a.set_window(window)
+        result = a.rotator_connect("COM5")
+        assert not result["ok"] and "pump" in result["error"]

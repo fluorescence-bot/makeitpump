@@ -76,24 +76,30 @@ class Rotator:
         self._buf = b""
         self._lock = threading.Lock()
         self.deg: Optional[int] = None  # current angle, None until homed
+        self.port: Optional[str] = None  # the open port, None when closed
 
     @property
     def connected(self) -> bool:
         return self._ser is not None
 
-    def connect(self, should_cancel: Callable[[], bool] = lambda: False) -> str:
-        """Find and open the board, then home it. Returns the port name."""
-        ports = candidate_ports()
+    def connect(self, port: Optional[str] = None,
+                should_cancel: Callable[[], bool] = lambda: False) -> str:
+        """Open the board on `port` (None: try the ports found by USB ID), then
+        home it. Returns the port name."""
+        ports = [port] if port else candidate_ports()
         if not ports:
             raise RotatorError("Cuvette rotator not found (is the Arduino Nano plugged in?)")
         self.close()
         for port in ports:
+            if should_cancel():
+                break
             try:
                 self._ser = serial.Serial(port, BAUD, timeout=0.1)
-            except serial.SerialException:
+            except (serial.SerialException, OSError):
                 continue
             self._buf = b""
             if self._handshake():
+                self.port = port
                 self.home(should_cancel)
                 return port
             self.close()
@@ -125,6 +131,7 @@ class Rotator:
             except Exception:
                 pass
         self._ser = None
+        self.port = None
         self.deg = None
 
     def home(self, should_cancel: Callable[[], bool] = lambda: False) -> None:

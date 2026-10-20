@@ -400,6 +400,7 @@
   fill: var(--muted, #A99BC4);
 }
 .rm-angle .rm-dose-input { border-color: var(--muted, #A99BC4); }
+.rm-robot-control .port-select { width: 100%; border: 2px solid var(--muted, #A99BC4); border-radius: 10px; font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   .rm-robot-busy .rm-robot-arm { animation: none; }
 }

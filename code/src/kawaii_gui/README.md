@@ -108,6 +108,10 @@ Settings at the top of `hardware.py`:
   `None` (the default) tries every USB serial port except the cuvette
   rotator and Arduino boards (`NOT_PUMP_VIDS`), so it works on Linux
   (`/dev/ttyACM*`), macOS (`/dev/cu.usbmodem*`) and Windows (`COMx`) alike.
+- Port dropdowns: if auto-detection picks the wrong port, choose it by hand in
+  the dropdown next to **🔌 Redetect pump** (pump) or just above the 🤖
+  (cuvette rotator). "Auto port" goes back to detection. A chosen pump port
+  must still answer the pump, else the mock is used.
 - `FLOW_ML_PER_S` - estimated flow per channel, only used to estimate dose
   times (placeholder; keep in sync with `web/src/flow.ts`).
 

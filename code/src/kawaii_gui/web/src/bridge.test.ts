@@ -559,6 +559,13 @@ describe("bridge mock pump", () => {
     expect((await api.set_pump_logging(false)).logging).toBe(false);
   });
 
+  it("has no serial ports, and takes a chosen port like the backend", async () => {
+    const api = await getApi();
+    expect(await api.list_ports()).toEqual([]);
+    expect((await api.pump_connect("COM5")).mode).toBe("mock");
+    expect(await api.rotator_connect("COM8")).toEqual({ ok: true });
+  });
+
   it("refuses to redetect while running, but still toggles logging", async () => {
     const api = await getApi();
     const run = api.run_program([{ id: "p1", type: "pause", s: 1 }], 1);

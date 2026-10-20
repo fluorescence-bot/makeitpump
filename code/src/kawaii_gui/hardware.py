@@ -35,13 +35,13 @@ FORCE_MOCK = False
 
 # Serial port of the pump, e.g. "COM3" or "/dev/ttyACM0". None: try every USB
 # serial port (COMx on Windows, /dev/cu.usbmodem* on macOS, /dev/ttyACM* on
-# Linux) except the cuvette rotator and Arduino boards, and use the one that
+# Linux) except the cuvette rotator's Arduino Nano, and use the one that
 # answers like a pump.
 PUMP_ADDRESS: Optional[str] = None
 
-# USB vendor IDs of boards that are never the pump (Arduino and its clones'
-# USB chips: CH340, FTDI, CP210x; Adafruit's Trinket is found by rotator.py).
-NOT_PUMP_VIDS = {0x2341, 0x2A03, 0x1A86, 0x0403, 0x10C4, 0x239A}
+# USB vendor IDs never tried as the pump by auto-detection: the ones rotator.py
+# finds the Nano by. A pump on such a USB chip can still be chosen in the UI.
+NOT_PUMP_VIDS = {vid for vid, _ in rotator.USB_IDS}
 
 # Pump channel for each mixer channel: A/B/C pump into the bowl, D pumps it out.
 CHANNELS = {"A": 1, "B": 2, "C": 3, "D": 4}
@@ -138,12 +138,20 @@ def _build_real(holder: list, result: concurrent.futures.Future) -> None:
 _address_to_try = PUMP_ADDRESS
 
 
-def _candidates() -> List[str]:
-    """The ports the pump may be on: PUMP_ADDRESS if set, else every USB serial
-    port that isn't a known board (skipping macOS' /dev/tty.* twin of each
-    /dev/cu.* port)."""
-    if PUMP_ADDRESS is not None:
-        return [PUMP_ADDRESS]
+def usb_ports() -> List[dict]:
+    """Every USB serial port, sorted, as {"device", "description"} (skipping
+    macOS' /dev/tty.* twin of each /dev/cu.* port). For the port dropdowns."""
+    found = [p for p in list_ports.comports()
+             if p.vid is not None and not p.device.startswith("/dev/tty.")]
+    return [{"device": p.device, "description": p.description or ""}
+            for p in sorted(found, key=lambda p: p.device)]
+
+
+def _candidates(address: Optional[str] = None) -> List[str]:
+    """The ports the pump may be on: `address` or PUMP_ADDRESS if set, else
+    every USB serial port that isn't a known board."""
+    if address or PUMP_ADDRESS is not None:
+        return [address or PUMP_ADDRESS]
     return sorted(p.device for p in list_ports.comports()
                   if p.vid is not None and p.vid not in NOT_PUMP_VIDS
                   and not p.device.startswith("/dev/tty."))
@@ -151,13 +159,9 @@ def _candidates() -> List[str]:
 
 def _real_port_missing(address: str) -> bool:
     # Only serial device paths can be checked; COMx and host:port are tried as-is.
-    if address.startswith("/dev") and not os.path.exists(address):
-        return True
-    # Without the pump, the cuvette rotator's board can take its port: never send it pump commands.
-    try:
-        return os.path.realpath(address) == os.path.realpath(rotator.find_port() or "")
-    except Exception:
-        return False
+    # (The rotator's Nano isn't refused by USB ID here: the pump's USB chip may be
+    # a Nano-like one too. Api.pump_connect refuses the rotator's open port.)
+    return address.startswith("/dev") and not os.path.exists(address)
 
 
 def _answers_like_pump(address: str) -> bool:
@@ -173,12 +177,12 @@ def _answers_like_pump(address: str) -> bool:
         return False
 
 
-def _try_real() -> bool:
+def _try_real(address: Optional[str] = None) -> bool:
     """Connect to the real pump on the first candidate port that answers. False
-    if there is none."""
-    if PUMP_ADDRESS is not None:
-        return _try_real_at(PUMP_ADDRESS)
-    return any(_answers_like_pump(a) and _try_real_at(a) for a in _candidates())
+    if there is none. A port chosen by hand is probed too, so a wrong one (e.g.
+    a dock's) isn't taken for the pump."""
+    return any(not _real_port_missing(a) and _answers_like_pump(a) and _try_real_at(a)
+               for a in _candidates(address))
 
 
 def _try_real_at(address: str) -> bool:
@@ -211,7 +215,7 @@ def _try_real_at(address: str) -> bool:
     return True
 
 
-async def _make_mock() -> None:
+async def _make_mock(address: Optional[str] = None) -> None:
     global pump, controller, mode, _address, _message, _hw
     # Create inside the running loop (the mock grabs the current loop).
     new_pump = MockPump(PUMP_ADDRESS or "mock", debug=False)
@@ -222,7 +226,7 @@ async def _make_mock() -> None:
     if FORCE_MOCK:
         _message = "Using the mock pump"
     else:
-        tried = ", ".join(_candidates())
+        tried = ", ".join(_candidates(address))
         where = f"on {tried}" if tried else "(no USB serial ports)"
         _message = f"No pump found {where} - using the mock pump"
 
@@ -246,17 +250,19 @@ async def _drop_pump() -> None:
             pass
 
 
-def connect() -> dict:
-    """(Re)detect the pump: the real one (see _candidates), else the mock. Drops the
-    old pump first. Blocks the calling thread (not the asyncio thread) for at most
-    a few PUMP_TIMEOUT_S; never hangs. Returns `info()`."""
+def connect(address: Optional[str] = None) -> dict:
+    """(Re)detect the pump: the real one on `address` (a port chosen in the UI;
+    None: see _candidates), else the mock. Drops the old pump first. Blocks the
+    calling thread (not the asyncio thread) for at most a few PUMP_TIMEOUT_S;
+    never hangs. Returns `info()`."""
     with _connect_lock:
         try:
             _submit(_drop_pump()).result(PUMP_TIMEOUT_S)
         except Exception:
             pass
-        if FORCE_MOCK or not _try_real():
-            _submit(_make_mock()).result(PUMP_TIMEOUT_S + 5)
+        if FORCE_MOCK or not _try_real(address):
+            _submit(_make_mock(address)).result(PUMP_TIMEOUT_S + 5)
+        print(f"[pump] {_message}")
         return info()
 
 

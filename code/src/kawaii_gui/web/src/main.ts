@@ -11,7 +11,7 @@ import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
 import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
-import type { BackendApi, BackendEvent, Preset, Channel, PumpInfo, RotatorState, RunStatus, TubingInfo } from "./types";
+import type { BackendApi, BackendEvent, Preset, Channel, PumpInfo, RotatorState, RunStatus, SerialPort, TubingInfo } from "./types";
 
 // Global state
 let api: BackendApi;
@@ -83,7 +83,8 @@ async function init(): Promise<void> {
     <input id="tube-input" type="number" step="0.01" min="0.13" max="3.17" placeholder="?"><span class="unit">mm</span>
     <span id="tube-flow" class="tube-flow"></span>
     <span class="pump-buttons">
-      <button id="btn-pump-redetect" class="btn btn-small" title="Look for the pump again (e.g. after plugging it in)">🔌 Redetect pump</button>
+      <select id="pump-port" class="port-select" title="Pump serial port. Auto: try every USB serial port that isn't a known board"></select>
+      <button id="btn-pump-redetect" class="btn btn-small" title="Look for the pump again on the chosen port (e.g. after plugging it in)">🔌 Redetect pump</button>
       <button id="btn-pump-log" class="btn btn-small btn-toggle" aria-pressed="false" title="Print the pump library's debug log to the terminal">🐞 Log</button>
     </span>
   `;
@@ -331,8 +332,53 @@ async function init(): Promise<void> {
     if (!result.ok) showStatusError(result.error || "Busy");
   });
   scene.onRotatorConnect(() => {
-    api.rotator_connect();
+    api.rotator_connect(robotPort.value || null);
   });
+
+  // Serial port dropdowns: "Auto" (value "") finds the device itself, or a port picked
+  // by hand. The list is refreshed when the mouse or focus comes to a dropdown, so a
+  // device plugged in after launch shows up.
+  function fillPorts(select: HTMLSelectElement, ports: SerialPort[]): void {
+    const chosen = select.value;
+    const options = [new Option("Auto port", "")];
+    for (const p of ports) {
+      const option = new Option(p.description ? `${p.device} · ${p.description}` : p.device, p.device);
+      option.title = p.description;
+      options.push(option);
+    }
+    if (chosen && !ports.some((p) => p.device === chosen)) options.push(new Option(`${chosen} (unplugged)`, chosen));
+    select.replaceChildren(...options);
+    select.value = chosen;
+  }
+  async function refreshPorts(): Promise<void> {
+    try {
+      const ports = await api.list_ports();
+      fillPorts(robotPort, ports);
+      fillPorts(pumpPort, ports);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  const robotPort = document.createElement("select");
+  robotPort.id = "robot-port";
+  robotPort.className = "port-select";
+  robotPort.title = "Cuvette rotator serial port. Auto: find the board by its USB id";
+  scene.mountRobotControl(robotPort);
+  const pumpPort = document.getElementById("pump-port") as HTMLSelectElement;
+  for (const select of [robotPort, pumpPort]) {
+    select.addEventListener("pointerenter", refreshPorts);
+    select.addEventListener("focus", refreshPorts);
+  }
+  fillPorts(robotPort, []);
+  fillPorts(pumpPort, []);
+  refreshPorts();
+  robotPort.onchange = async () => {
+    const result = await api.rotator_connect(robotPort.value || null);
+    if (!result.ok) showStatusError(result.error || "Couldn't connect the cuvette rotator");
+  };
+  function updateRobotPort(): void {
+    robotPort.disabled = rotatorState === "moving" || ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+  }
 
   // Tubing: the pump's max flow, and so how fast every dose runs, follows the tube size set on it
   const tubeInput = document.getElementById("tube-input") as HTMLInputElement;
@@ -385,7 +431,8 @@ async function init(): Promise<void> {
   let pumpBusy = false;
   const pumpLocked = () => ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
   function updateRedetect(): void {
-    redetectBtn.disabled = pumpBusy || pumpLocked();
+    redetectBtn.disabled = pumpPort.disabled = pumpBusy || pumpLocked();
+    updateRobotPort();
   }
   function showPump(p: PumpInfo): void {
     pumpBadge.hidden = false;
@@ -405,7 +452,7 @@ async function init(): Promise<void> {
     pumpBusy = true;
     updateRedetect();
     try {
-      const info = await api.pump_connect();
+      const info = await api.pump_connect(pumpPort.value || null);
       showPump(info);
       if (!info.ok) showStatusError(info.error || "Couldn't detect the pump");
       showTubing(await api.get_tubing());
@@ -417,6 +464,7 @@ async function init(): Promise<void> {
     }
   }
   redetectBtn.onclick = connectPump;
+  pumpPort.onchange = connectPump;
   logBtn.onclick = async () => {
     const info = await api.set_pump_logging(!pumpLogging);
     showPump(info);
@@ -552,6 +600,7 @@ async function init(): Promise<void> {
     } else if (event.type === "rotator") {
       rotatorState = event.state;
       scene.setRotator(event.state, event.deg, event.target, event.message);
+      updateRobotPort();
     }
   });
 

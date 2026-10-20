@@ -90,7 +90,7 @@ def test_auto_detect_skips_boards_and_ports_that_dont_answer(monkeypatch):
     def port(device, vid):
         return types.SimpleNamespace(device=device, vid=vid)
     ports = [port("COM1", None), port("COM3", 0x057E), port("COM4", 0x1A86),
-             port("COM5", 0x239A), port("COM6", 0x1234)]
+             port("COM5", 0x2341), port("COM6", 0x1234)]
     monkeypatch.setattr(hardware, "FORCE_MOCK", False)
     monkeypatch.setattr(hardware, "PUMP_ADDRESS", None)
     monkeypatch.setattr(hardware.list_ports, "comports", lambda: ports)
@@ -117,6 +117,7 @@ def test_detection_does_not_hang_on_silent_pump(monkeypatch, tmp_path):
     monkeypatch.setattr(hardware, "FORCE_MOCK", False)
     monkeypatch.setattr(hardware, "PUMP_ADDRESS", str(port))
     monkeypatch.setattr(hardware, "_real_port_missing", lambda a: False)
+    monkeypatch.setattr(hardware, "_answers_like_pump", lambda a: True)
     monkeypatch.setattr(hardware, "RealPump", Silent)
     monkeypatch.setattr(hardware, "PUMP_TIMEOUT_S", 0.5)
     start = time.monotonic()
@@ -134,3 +135,38 @@ def test_set_logging_changes_ismatec_level(monkeypatch):
     assert hardware.info()["logging"] is True
     hardware.set_logging(False)
     assert logging.getLogger("ismatec").level == logging.WARNING
+
+
+def test_chosen_port_is_probed_too(monkeypatch):
+    """A port picked in the UI that doesn't answer (e.g. a dock's) isn't taken for the pump."""
+    monkeypatch.setattr(hardware, "FORCE_MOCK", False)
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", None)
+    monkeypatch.setattr(hardware, "_real_port_missing", lambda a: False)
+    monkeypatch.setattr(hardware, "_answers_like_pump", lambda a: False)
+    tried = []
+    monkeypatch.setattr(hardware, "_try_real_at", lambda a: tried.append(a) or True)
+    info = hardware.connect("COM9")
+    assert info["mode"] == "mock" and tried == []
+    assert info["message"] == "No pump found on COM9 - using the mock pump"
+
+
+def test_chosen_port_is_used(monkeypatch):
+    monkeypatch.setattr(hardware, "PUMP_ADDRESS", None)
+    monkeypatch.setattr(hardware, "_real_port_missing", lambda a: False)
+    monkeypatch.setattr(hardware, "_answers_like_pump", lambda a: True)
+    tried = []
+    monkeypatch.setattr(hardware, "_try_real_at", lambda a: tried.append(a) or True)
+    assert hardware._try_real("COM9") and tried == ["COM9"]
+
+
+def test_usb_ports_for_the_dropdowns(monkeypatch):
+    def port(device, vid, description=""):
+        return types.SimpleNamespace(device=device, vid=vid, description=description)
+    monkeypatch.setattr(hardware.list_ports, "comports", lambda: [
+        port("COM1", None, "Communications Port"), port("COM4", 0x1A86, "USB-SERIAL CH340"),
+        port("COM3", 0x1234, "USB Serial Device"),
+        port("/dev/tty.usbmodem1", 0x1234), port("/dev/cu.usbmodem1", 0x1234, "Reglo")])
+    assert hardware.usb_ports() == [
+        {"device": "/dev/cu.usbmodem1", "description": "Reglo"},
+        {"device": "COM3", "description": "USB Serial Device"},
+        {"device": "COM4", "description": "USB-SERIAL CH340"}]

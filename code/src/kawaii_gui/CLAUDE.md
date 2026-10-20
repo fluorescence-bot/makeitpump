@@ -55,7 +55,7 @@ can't be paused: Pause takes effect before the next block (`_wait_if_paused`); S
 Durations are estimates: `seconds = ml / FLOW_ML_PER_S`. `FLOW_ML_PER_S` is defined independently
 in `hardware.py` (Python: stopped-block estimates) and `web/src/flow.ts` (TypeScript: UI mock,
 animation timing, block times) — **these two must be kept in sync** manually; there is no shared
-source.
+source, but `tests/test_contract_sync.py` fails when they differ.
 
 **Frontend has no framework** — vanilla TS + Vite, DOM built by hand in `main.ts`. Key modules:
 - `bridge.ts` — the `Api` client; when no pywebview host is present (e.g. plain browser dev) it
@@ -69,7 +69,7 @@ source.
 - `totals.ts` / `sessionlog.ts` — track per-channel session totals from `pumped` events for
   working backwards from a result (e.g. target pH) to how much of each liquid was used.
 - `types.ts` — the shared contract types; must stay verbatim-identical to the copy in
-  `CONTRACT.md`.
+  `CONTRACT.md` (checked by `tests/test_contract_sync.py`).
 
 **Pump** (`hardware.py`): set up 1:1 like `../reglo_gui/reglo_gui.py`. The `ismatec` library
 (`ismatec-control`, vendored in `../../lib/ismatec-pump`) is async, so the `Pump` and

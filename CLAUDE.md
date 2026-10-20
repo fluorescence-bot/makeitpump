@@ -4,31 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Course project (Digital Fabrication and Maker Space): an automatic solution mixer for a
-fluorescence scientist. A robot pumps up to four liquids (A, B, C) into a mixing bowl (D), which
-is then pumped out to a measuring instrument. Electronics run on an Adafruit M0 Express.
+RainMixer: an automatic solution mixer for a fluorescence scientist (course project, Digital
+Fabrication and Maker Space). A robot pumps up to four liquids (A, B, C) into a mixing bowl (D),
+which is then pumped out to a measuring instrument.
 
-This repo is a mix of the actual product code and course/report material — most of it is not
-software to build or run:
+- `code/src/kawaii_gui/` — **the main codebase**: the pywebview + TypeScript desktop app that
+  controls the mixer. Has its own `CLAUDE.md` (commands, architecture) and `CONTRACT.md` (the
+  frontend/backend interface spec) — read those before working there.
+- `code/src/reglo_gui/` — simpler Tkinter GUI for the pump + rotator.
+- `code/src/cuvette_rotater/` — CircuitPython `code.py` for the Trinket M0 that rotates the cuvette
+  (0–60°, USB serial); see its README for the serial protocol. The board's copy is the one that
+  runs — keep this in sync.
+- `code/lib/ismatec-pump/` — vendored `ismatec-control` pump driver (GPL-3; the rest of the repo is MIT). Both GUIs install it
+  from here via a relative path in their `requirements.txt`.
 
-- `gui/` — **the real codebase**: the pywebview + TypeScript desktop app that controls the mixer.
-  Has its own [`gui/CLAUDE.md`](gui/CLAUDE.md) (commands, architecture) and
-  [`gui/CONTRACT.md`](gui/CONTRACT.md) (the frontend/backend interface spec) — read those before
-  working in `gui/`.
-- `firmware/` — code that runs on the rig's microcontrollers. `firmware/cuvette_rotator/` is the
-  CircuitPython `code.py` for the Trinket M0 that rotates the cuvette (0–60°, USB serial); see its
-  README for the serial protocol. The board's copy is the one that runs — keep this in sync.
-- `course_exercises/arduino/` — standalone Arduino sketches from course exercises (e.g.
-  `hc_sr04/`), unrelated to the `gui/` app.
-- `report.pdf` / `report.tex` — the project report.
-- `sketches/` / `sketches.pdf` — design sketches (images).
-- `prototypes/` — early static HTML mockups, superseded by `gui/`.
-- `notes/` — misc project notes.
-- `pyproject.toml` / `uv.lock` at the root are for exploratory/hardware scripts (e.g. the
-  `ismatec` pump library, `pyserial`, `matplotlib`) outside `gui/`, managed with `uv`; they are
-  unrelated to `gui/`'s own `requirements.txt` + `.venv`.
+`course/` (reports, sketches, notes) exists only in the private `alexandermittet/DIGIFAB` repo.
+`scripts/publish-to-org.sh` pushes everything else, with history, to the public
+`fluorescence-bot/makeitpump`; add any new top-level code path to its `KEEP` list.
 
-## Working here
+## CI
 
-Nearly all real feature work happens under `gui/` — go there first. Only touch the root level for
-things that are genuinely repo-wide (this file, `.gitignore`, top-level docs).
+`.github/workflows/build-exe.yml` builds a one-file Windows `RainMixer.exe` (PyInstaller, bundling
+`web/dist` and `presets`) on every push to `main` and publishes it as the rolling `latest`
+release. If you add runtime files the app reads via `resource_dir()`, add them to its
+`--add-data` list.

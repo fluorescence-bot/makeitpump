@@ -90,13 +90,13 @@ python app.py --dev
 ## Hardware Integration
 
 `hardware.py` drives the Ismatec Reglo ICC pump with Andreas' pump library
-([drivs/ismatec-pump](https://github.com/drivs/ismatec-pump), installed from
-`requirements.txt` as `ismatec-control`) and his `DilutionController`
+(`ismatec-control`, vendored in [`../../lib/ismatec-pump`](../../lib/ismatec-pump) and
+installed from there by `requirements.txt`) and his `DilutionController`
 (`dilution_controller.py`, copied from `../reglo_gui/`), set up the same way as
 in `reglo_gui.py`. Channels A/B/C/D are pump channels 1/2/3/4.
 
-The library installs over SSH, so `pip install -r requirements.txt` needs your
-SSH key on GitHub and collaborator access to the repo.
+`requirements.txt` refers to it by a relative path, so run `pip install -r
+requirements.txt` from this directory.
 
 Settings at the top of `hardware.py`:
 

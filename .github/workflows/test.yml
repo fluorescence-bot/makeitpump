@@ -11,40 +11,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
 
     - name: Set up Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
-        node-version: '18'
+        node-version: '20'
 
     - name: Install Python dependencies
       run: |
-        cd gui
+        cd code/src/kawaii_gui
         python -m pip install --upgrade pip
         pip install -r requirements.txt -r requirements-dev.txt
 
     - name: Run Python tests
       run: |
-        cd gui
+        cd code/src/kawaii_gui
         pytest -q
 
     - name: Install Node dependencies
       run: |
-        cd gui/web
+        cd code/src/kawaii_gui/web
         npm ci
 
     - name: Run TypeScript tests
       run: |
-        cd gui/web
+        cd code/src/kawaii_gui/web
         npm test
 
     - name: Build TypeScript
       run: |
-        cd gui/web
+        cd code/src/kawaii_gui/web
         npm run build

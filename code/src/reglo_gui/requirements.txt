@@ -1,2 +1,3 @@
-ismatec-control @ git+ssh://git@github.com/drivs/ismatec-pump.git@main
+# Pump library, vendored in code/lib/ismatec-pump (run pip from code/src/reglo_gui)
+../../lib/ismatec-pump
 pyserial==3.5

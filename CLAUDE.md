@@ -21,7 +21,7 @@ which is then pumped out to a measuring instrument.
 
 `course/` (reports, sketches, notes) exists only in the private `alexandermittet/DIGIFAB` repo.
 `scripts/publish-to-org.sh` pushes everything else, with history, to the public
-`fluorescence-bot/makeitpump`; add any new top-level code path to its `KEEP` list.
+`fluorescence-bot/rainmixer`; add any new top-level code path to its `KEEP` list.
 
 ## CI
 

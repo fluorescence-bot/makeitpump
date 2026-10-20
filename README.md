@@ -9,7 +9,7 @@ Built for the course Digital Fabrication and Maker Space.
 
 ## Download (Windows)
 
-**[Download RainMixer.exe](../../releases/latest/download/RainMixer.exe)**: the
+**[Download RainMixer.exe](https://github.com/fluorescence-bot/makeitpump/releases/latest/download/RainMixer.exe)**: the
 latest build of `main`, rebuilt automatically on every merge. Double-click it
 (Windows 10/11). Saved presets go in a `presets/` folder next to the exe. If
 SmartScreen warns, choose *More info → Run anyway*.

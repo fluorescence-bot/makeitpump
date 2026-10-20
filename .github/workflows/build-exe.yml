@@ -1,0 +1,73 @@
+name: Build Windows exe
+
+# Every push to main (i.e. every merged PR) builds RainMixer.exe and publishes it
+# to the rolling "latest" GitHub Release, downloadable by anyone at
+# https://github.com/<owner>/<repo>/releases/latest
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-exe
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: code/src/kawaii_gui
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build frontend
+      working-directory: code/src/kawaii_gui/web
+      run: |
+        npm ci
+        npm run build
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt pyinstaller
+
+    - name: Build exe
+      run: >
+        pyinstaller --noconfirm --clean --onefile --windowed
+        --name RainMixer
+        --add-data "web/dist;web/dist"
+        --add-data "presets;presets"
+        app.py
+
+    - name: Upload workflow artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RainMixer-windows
+        path: code/src/kawaii_gui/dist/RainMixer.exe
+
+    - name: Publish to the "latest" release
+      if: github.ref == 'refs/heads/main'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        notes="Automatic build of ${GITHUB_SHA::7} from main ($(date -u +%Y-%m-%d)).
+
+        Download RainMixer.exe and double-click it (Windows 10/11). Saved presets go in a
+        presets/ folder next to the exe. If Windows SmartScreen warns, choose More info -> Run anyway."
+        gh release delete latest --yes --cleanup-tag || true
+        gh release create latest dist/RainMixer.exe \
+          --title "RainMixer (latest build)" --notes "$notes" --target "$GITHUB_SHA" --latest

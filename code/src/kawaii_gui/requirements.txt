@@ -3,5 +3,6 @@ pywebview>=5
 pywebview[qt]>=5; sys_platform == "linux"
 PyYAML>=6.0
 pyserial>=3.5   # cuvette rotator (Trinket M0 over USB serial)
-# Pump (Andreas' library; SSH key on GitHub + collaborator access to drivs/ismatec-pump)
-ismatec-control @ git+ssh://git@github.com/drivs/ismatec-pump.git@v0.1.0
+# Pump (Andreas' library, vendored in code/lib/ismatec-pump; same code as drivs/ismatec-pump v0.1.0).
+# Relative path: run pip/uv from code/src/kawaii_gui (the run scripts do).
+../../lib/ismatec-pump

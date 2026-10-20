@@ -15,7 +15,7 @@ which is then pumped out to a measuring instrument.
 - `code/src/cuvette_rotater/` — CircuitPython `code.py` for the Trinket M0 that rotates the cuvette
   (0–60°, USB serial); see its README for the serial protocol. The board's copy is the one that
   runs — keep this in sync.
-- `code/lib/ismatec-pump/` — vendored `ismatec-control` pump driver (GPL-3). Both GUIs install it
+- `code/lib/ismatec-pump/` — vendored `ismatec-control` pump driver (GPL-3; the rest of the repo is MIT). Both GUIs install it
   from here via a relative path in their `requirements.txt`.
 
 ## CI

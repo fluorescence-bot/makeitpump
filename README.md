@@ -33,3 +33,9 @@ code/
 - `.github/workflows/test.yml`: Python and TypeScript tests plus the frontend build, on pushes and PRs.
 - `.github/workflows/build-exe.yml`: builds `RainMixer.exe` with PyInstaller on
   every push to `main` and replaces the `latest` release with it.
+
+## License
+
+The project's own code is [MIT](LICENSE). The vendored pump driver in
+`code/lib/ismatec-pump` is GPL-3 (see its [LICENSE](code/lib/ismatec-pump/LICENSE)),
+and since `RainMixer.exe` bundles it, the exe as a whole is distributed under GPL-3.

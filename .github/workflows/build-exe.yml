@@ -67,7 +67,10 @@ jobs:
         notes="Automatic build of ${GITHUB_SHA::7} from main ($(date -u +%Y-%m-%d)).
 
         Download RainMixer.exe and double-click it (Windows 10/11). Saved presets go in a
-        presets/ folder next to the exe. If Windows SmartScreen warns, choose More info -> Run anyway."
+        presets/ folder next to the exe. If Windows SmartScreen warns, choose More info -> Run anyway.
+
+        License: project code is MIT; the bundled ismatec-control pump driver is GPL-3, so this
+        exe is distributed under GPL-3. Source: https://github.com/${GITHUB_REPOSITORY}"
         gh release delete latest --yes --cleanup-tag || true
         gh release create latest dist/RainMixer.exe \
           --title "RainMixer (latest build)" --notes "$notes" --target "$GITHUB_SHA" --latest

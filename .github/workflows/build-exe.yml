@@ -52,11 +52,38 @@ jobs:
         --add-data "presets;presets"
         app.py
 
+    # Same app with a console window: shows the Python/pywebview output and any
+    # error, for when RainMixer.exe fails silently. Set PYWEBVIEW_LOG=debug first
+    # for pywebview's own log.
+    - name: Build debug exe (console)
+      run: >
+        pyinstaller --noconfirm --onefile --console
+        --name RainMixer-debug
+        --add-data "web/dist;web/dist"
+        --add-data "presets;presets"
+        app.py
+
+    # Start the debug exe on the runner and print what it says, so a build that
+    # crashes at startup shows up in the log (it doesn't fail the build).
+    - name: Smoke test (run the debug exe for 40 s)
+      continue-on-error: true
+      shell: pwsh
+      run: |
+        $env:PYWEBVIEW_LOG = "debug"
+        $p = Start-Process dist\RainMixer-debug.exe -PassThru `
+          -RedirectStandardOutput smoke.out -RedirectStandardError smoke.err
+        Start-Sleep 40
+        if ($p.HasExited) { "EXITED with code $($p.ExitCode)" }
+        else { "STILL RUNNING after 40 s (window up)"; Stop-Process -Id $p.Id -Force }
+        Get-Content smoke.out, smoke.err
+
     - name: Upload workflow artifact
       uses: actions/upload-artifact@v5
       with:
         name: RainMixer-windows
-        path: code/src/kawaii_gui/dist/RainMixer.exe
+        path: |
+          code/src/kawaii_gui/dist/RainMixer.exe
+          code/src/kawaii_gui/dist/RainMixer-debug.exe
 
     - name: Publish to the "latest" release
       if: github.ref == 'refs/heads/main'
@@ -72,5 +99,5 @@ jobs:
         License: project code is MIT; the bundled ismatec-control pump driver is GPL-3, so this
         exe is distributed under GPL-3. Source: https://github.com/${GITHUB_REPOSITORY}"
         gh release delete latest --yes --cleanup-tag || true
-        gh release create latest dist/RainMixer.exe \
+        gh release create latest dist/RainMixer.exe dist/RainMixer-debug.exe \
           --title "RainMixer (latest build)" --notes "$notes" --target "$GITHUB_SHA" --latest

@@ -22,7 +22,7 @@ BRANCH=main
 # Everything that goes public. Old roots (gui/, firmware/, reglo_gui/, ...) keep
 # the history from before the code moved into code/.
 KEEP=(
-    code/ scripts/ .github/
+    code/ scripts/ .github/ docs/screenshots/
     gui/ firmware/ reglo_gui/ dilution_controller.py mock_gui.py
     README.md CLAUDE.md LICENSE .gitignore .gitattributes
 )

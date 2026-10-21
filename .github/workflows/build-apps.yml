@@ -4,10 +4,11 @@ name: Build apps
 # macOS and Linux with PyInstaller and publishes them to the rolling "latest"
 # GitHub Release, downloadable by anyone at
 # https://github.com/<owner>/<repo>/releases/latest
-# Other branches (or a manual run) only build and smoke-test, as workflow artifacts.
+# Pull requests (and manual runs) only build and smoke-test, as workflow artifacts.
 on:
   push:
     branches: [ main ]
+  pull_request:
   workflow_dispatch:
 
 permissions:

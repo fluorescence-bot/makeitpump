@@ -22,7 +22,7 @@ BRANCH=main
 # Everything that goes public. Old roots (gui/, firmware/, reglo_gui/, ...) keep
 # the history from before the code moved into code/.
 KEEP=(
-    code/ scripts/ .github/
+    code/ scripts/ .github/ docs/screenshots/
     gui/ firmware/ reglo_gui/ dilution_controller.py mock_gui.py
     README.md CLAUDE.md LICENSE .gitignore .gitattributes
 )
@@ -68,6 +68,6 @@ if $dry_run; then
 fi
 
 say "Pushing to $TARGET ($BRANCH)"
-git push "${push_flags[@]}" "$TARGET" "$BRANCH:$BRANCH" \
+git push ${push_flags[@]+"${push_flags[@]}"} "$TARGET" "$BRANCH:$BRANCH" \
     || die "Push rejected. If the org repo has unrelated history (e.g. its initial commit), re-run with --force."
 say "Done: ${TARGET%.git}"

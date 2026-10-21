@@ -1,5 +1,12 @@
 # RainMixer — Automatic Solution Mixer
 
+<table>
+  <tr>
+    <td align="center" width="50%"><img src="docs/screenshots/kawaii_gui.png" alt="Kawaii GUI"><br><b>Kawaii GUI</b> (<code>code/src/kawaii_gui</code>)</td>
+    <td align="center" width="50%"><img src="docs/screenshots/reglo_gui.png" alt="Reglo GUI"><br><b>Reglo GUI</b> (<code>code/src/reglo_gui</code>)</td>
+  </tr>
+</table>
+
 An automatic solution mixer for a fluorescence scientist. A robot pumps up to
 four liquids (A, B, C) into a mixing bowl (D), which is then pumped out to a
 measuring instrument. The pumping is done by an Ismatec Reglo ICC peristaltic
@@ -9,7 +16,7 @@ Built for the course Digital Fabrication and Maker Space.
 
 ## Download (Windows)
 
-**[Download RainMixer.exe](../../releases/latest/download/RainMixer.exe)**: the
+**[Download RainMixer.exe](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer.exe)**: the
 latest build of `main`, rebuilt automatically on every merge. Double-click it
 (Windows 10/11). Saved presets go in a `presets/` folder next to the exe. If
 SmartScreen warns, choose *More info → Run anyway*.

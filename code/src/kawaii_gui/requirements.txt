@@ -1,4 +1,7 @@
 pywebview>=5
+# Windows: pywebview's .NET bridge. The exe built with pythonnet 3.2.1 failed on a lab PC
+# with "Failed to resolve Python.Runtime.Loader.Initialize"; stay on the long-used 3.0.x.
+pythonnet==3.0.5; sys_platform == "win32"
 # Linux: Qt backend (QtPy + PyQt6 + WebEngine), used when GTK/WebKit isn't available.
 pywebview[qt]>=5; sys_platform == "linux"
 PyYAML>=6.0

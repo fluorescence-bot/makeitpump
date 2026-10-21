@@ -83,14 +83,18 @@ class Api:
     def _get_presets_dir(self) -> Path:
         """Return the user presets directory, creating it if needed.
 
-        When frozen (PyInstaller .exe) this is a `presets/` folder next to the
+        When frozen (PyInstaller build) this is a `presets/` folder next to the
         executable, so saved presets survive restarts; bundled examples are
-        copied there on first run.
+        copied there on first run. On macOS it is ~/Documents/RainMixer/presets
+        instead: a downloaded .app runs from a read-only copy of itself.
         """
         if getattr(sys, "frozen", False):
-            presets_dir = Path(sys.executable).parent / "presets"
+            if sys.platform == "darwin":
+                presets_dir = Path.home() / "Documents" / "RainMixer" / "presets"
+            else:
+                presets_dir = Path(sys.executable).parent / "presets"
             first_run = not presets_dir.exists()
-            presets_dir.mkdir(exist_ok=True)
+            presets_dir.mkdir(parents=True, exist_ok=True)
             bundled = resource_dir() / "presets"
             if first_run and bundled.is_dir():
                 for f in bundled.glob("*.yaml"):

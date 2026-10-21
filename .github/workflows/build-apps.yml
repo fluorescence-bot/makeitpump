@@ -1,0 +1,174 @@
+name: Build apps
+
+# Every push to main (i.e. every merged PR) builds the RainMixer GUI for Windows,
+# macOS and Linux with PyInstaller and publishes them to the rolling "latest"
+# GitHub Release, downloadable by anyone at
+# https://github.com/<owner>/<repo>/releases/latest
+# Pull requests (and manual runs) only build and smoke-test, as workflow artifacts.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apps
+  cancel-in-progress: false  # never cancel between release delete and create
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS Apple silicon
+            os: macos-latest
+            asset: RainMixer-macOS-AppleSilicon.zip
+          - name: macOS Intel
+            os: macos-15-intel
+            asset: RainMixer-macOS-Intel.zip
+          # The oldest supported runner, so the binary runs on older glibc too.
+          - name: Linux
+            os: ubuntu-22.04
+            asset: RainMixer-Linux.tar.gz
+    defaults:
+      run:
+        shell: bash
+        working-directory: code/src/kawaii_gui
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+
+    - uses: actions/setup-node@v5
+      with:
+        node-version: '20'
+
+    - name: Build frontend
+      working-directory: code/src/kawaii_gui/web
+      run: |
+        npm ci
+        npm run build
+
+    # Qt (pywebview's Linux backend here, from requirements.txt) needs these at
+    # build time for PyInstaller's hooks and at run time for the smoke test.
+    - name: Install Linux system libraries
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 \
+          libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+          libxcb-xinerama0 libegl1 libgl1 libnss3 libxcomposite1 libxdamage1 libxrandr2 \
+          libxtst6 libasound2
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt pyinstaller
+
+    # --- Windows: one-file RainMixer.exe, plus a console RainMixer-debug.exe that
+    # shows the output and any error (RainMixer.exe shows nothing if it fails early).
+    - name: Build (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        pyinstaller --noconfirm --clean --onefile --windowed --name RainMixer \
+          --add-data "web/dist:web/dist" --add-data "presets:presets" app.py
+        pyinstaller --noconfirm --onefile --console --name RainMixer-debug \
+          --add-data "web/dist:web/dist" --add-data "presets:presets" app.py
+        mkdir -p release
+        cp dist/RainMixer.exe dist/RainMixer-debug.exe release/
+
+    # --- macOS: RainMixer.app (PyInstaller ad-hoc signs it), zipped with ditto so
+    # the bundle's symlinks and signature survive.
+    - name: Build (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        pyinstaller --noconfirm --clean --windowed --name RainMixer \
+          --osx-bundle-identifier org.fluorescence-bot.rainmixer \
+          --add-data "web/dist:web/dist" --add-data "presets:presets" app.py
+        mkdir -p release
+        ditto -c -k --keepParent dist/RainMixer.app "release/${{ matrix.asset }}"
+
+    # --- Linux: a RainMixer/ folder with the RainMixer program, as a .tar.gz
+    # (keeps the executable bit, which a plain download loses). One folder rather
+    # than one file: Qt WebEngine runs a helper process from it.
+    - name: Build (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        pyinstaller --noconfirm --clean --windowed --name RainMixer \
+          --add-data "web/dist:web/dist" --add-data "presets:presets" app.py
+        mkdir -p release
+        tar -czf "release/${{ matrix.asset }}" -C dist RainMixer
+
+    # Start the built app for 40 s and print what it says, so a build that crashes
+    # at startup shows up in the log (it doesn't fail the build).
+    - name: Smoke test (run the app for 40 s)
+      continue-on-error: true
+      run: |
+        export PYWEBVIEW_LOG=debug
+        case "$RUNNER_OS" in
+          Windows) app=dist/RainMixer-debug.exe ;;
+          macOS)   app=dist/RainMixer.app/Contents/MacOS/RainMixer ;;
+          Linux)   app="xvfb-run -a dist/RainMixer/RainMixer" ;;
+        esac
+        $app > smoke.log 2>&1 &
+        pid=$!
+        sleep 40
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "STILL RUNNING after 40 s (window up)"
+          kill "$pid" 2>/dev/null || true
+          if [[ "$RUNNER_OS" == Windows ]]; then taskkill //F //IM RainMixer-debug.exe || true; fi
+        else
+          wait "$pid"; echo "EXITED with code $?"
+        fi
+        cat smoke.log
+
+    - name: Upload workflow artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: RainMixer-${{ runner.os }}-${{ runner.arch }}
+        path: code/src/kawaii_gui/release/*
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v5
+      with:
+        path: release
+        merge-multiple: true
+
+    - name: Publish to the "latest" release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        ls -l release
+        notes="Automatic build of ${GITHUB_SHA::7} from main ($(date -u +%Y-%m-%d)). Download the file for your computer:
+
+        - **Windows 10/11:** RainMixer.exe. Double-click it. If SmartScreen warns, choose More info -> Run anyway.
+          Saved presets go in a presets/ folder next to the exe.
+        - **Mac with Apple silicon (M1 or newer):** RainMixer-macOS-AppleSilicon.zip. **Intel Mac:** RainMixer-macOS-Intel.zip.
+          Double-click the zip, then double-click RainMixer. The first time, macOS says it can't check the app:
+          open System Settings -> Privacy & Security, scroll down and click Open Anyway.
+          Saved presets go in Documents/RainMixer/presets.
+        - **Linux (x86-64):** RainMixer-Linux.tar.gz. Extract it and double-click RainMixer/RainMixer
+          (or run ./RainMixer/RainMixer). Saved presets go in RainMixer/presets.
+
+        RainMixer-debug.exe is the Windows app with a console window that shows errors.
+
+        License: project code is MIT; the bundled ismatec-control pump driver is GPL-3, so these
+        builds are distributed under GPL-3. Source: https://github.com/${GITHUB_REPOSITORY}"
+        gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+        gh release create latest release/* --repo "$GITHUB_REPOSITORY" \
+          --title "RainMixer (latest build)" --notes "$notes" --target "$GITHUB_SHA" --latest

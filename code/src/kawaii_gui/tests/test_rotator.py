@@ -1,6 +1,6 @@
 """
 Tests for the cuvette rotator: the serial driver (gui/rotator.py) against a fake
-board that behaves like firmware/cuvette_rotator/code.py, and the Api's rotate
+board that behaves like cuvette_rotater/cuvette_rotater.ino, and the Api's rotate
 block, manual rotate and connect.
 """
 
@@ -18,10 +18,14 @@ from test_api import FakeWindow
 
 class FakeBoard:
     """Fake serial port speaking the firmware protocol. Replies arrive a few bytes
-    at a time; `stale` is output still in the pipe from before we connected."""
+    at a time; `stale` is output still in the pipe from before we connected.
+    Like the Nano, it says BOOTED when opened (`booted=False`: a board that
+    didn't restart, which only answers PING)."""
 
-    def __init__(self, stale: bytes = b"", move_delay: float = 0.0):
+    def __init__(self, stale: bytes = b"", move_delay: float = 0.0, booted: bool = True):
         self.out = bytearray(stale)
+        if booted:
+            self.out += b"<STATUS:BOOTED>\r\n"
         self.written: List[str] = []
         self.move_delay = move_delay
         self.lock = threading.Lock()
@@ -46,6 +50,9 @@ class FakeBoard:
 
     def write(self, data: bytes) -> None:
         cmd = data.decode().strip()
+        if cmd == "PING":
+            self._say("<STATUS:PONG>")
+            return
         self.written.append(cmd)
         if cmd == "HOME":
             self._say("<STATUS:HOMING>")
@@ -68,12 +75,12 @@ class FakeBoard:
 
 @pytest.fixture
 def board(monkeypatch):
-    """A fake Trinket M0 on /dev/fake; returns the FakeBoard that connect() opens."""
+    """A fake Nano (CH340) on /dev/fake; returns the FakeBoard that connect() opens."""
     state = SimpleNamespace(board=FakeBoard())
     monkeypatch.setattr(
         rotator.list_ports, "comports",
-        lambda: [SimpleNamespace(device="/dev/other", vid=0x2341, pid=0x0043, product="Uno"),
-                 SimpleNamespace(device="/dev/fake", vid=rotator.VID, pid=rotator.PID, product="Trinket M0")],
+        lambda: [SimpleNamespace(device="/dev/other", vid=0x05AC, pid=0x1234, product="Bluetooth"),
+                 SimpleNamespace(device="/dev/fake", vid=0x1A86, pid=0x7523, product="USB Serial")],
     )
     monkeypatch.setattr(rotator.serial, "Serial", lambda *a, **k: state.board)
     return state
@@ -98,6 +105,40 @@ def test_find_port_by_vid_pid(board):
 
 
 def test_find_port_none(monkeypatch):
+    monkeypatch.setattr(rotator.list_ports, "comports", lambda: [])
+    assert rotator.find_port() is None
+
+
+def test_connect_skips_silent_port(monkeypatch):
+    # Two Arduino-like ports: the first never answers (e.g. the pump), the second is the rotator
+    monkeypatch.setattr(rotator, "BOOT_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(rotator, "PING_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(
+        rotator.list_ports, "comports",
+        lambda: [SimpleNamespace(device="/dev/pump", vid=0x0403, pid=0x6001, product="FT232R"),
+                 SimpleNamespace(device="/dev/nano", vid=0x1A86, pid=0x7523, product="USB Serial")],
+    )
+    silent, nano = FakeBoard(booted=False), FakeBoard()
+    silent.write = lambda data: None
+    monkeypatch.setattr(rotator.serial, "Serial", lambda port, *a, **k: silent if port == "/dev/pump" else nano)
+    r = rotator.Rotator()
+    assert r.connect() == "/dev/nano"
+    assert silent.closed and nano.written == ["HOME"]
+
+
+def test_connect_pings_board_that_did_not_restart(board, monkeypatch):
+    monkeypatch.setattr(rotator, "BOOT_TIMEOUT_S", 0.1)
+    board.board = FakeBoard(booted=False)
+    assert rotator.Rotator().connect() == "/dev/fake"
+
+
+def test_find_port_ignores_other_devices(monkeypatch):
+    monkeypatch.setattr(rotator.list_ports, "comports",
+                        lambda: [SimpleNamespace(device="/dev/bt", vid=None, pid=None, product=None)])
+    assert rotator.find_port() is None
+
+
+def test_find_port_empty(monkeypatch):
     monkeypatch.setattr(rotator.list_ports, "comports", lambda: [])
     assert rotator.find_port() is None
 

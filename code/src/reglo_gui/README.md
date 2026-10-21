@@ -19,6 +19,9 @@ pip install -r requirements.txt
 python reglo_gui.py
 ```
 
+To try it without the pump, start it with `--mock_pump` (and `--mock_arm`
+without the rotator).
+
 ### App icon and launcher on Linux
 
 GNOME shows an app's icon in the dock and Alt-Tab only if the app has
@@ -45,13 +48,14 @@ flags:
 | `--enable_logging` | Show debug logging in the terminal. Off by default. |
 | `--mock_pump` | Use a mock pump. Off by default. |
 | `--mock_arm` | Use a mock arm. Off by default. |
-| `PUMP_ADDRESS` | Serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`. |
-| `SERIAL_PORT`, `SERIAL_BAUD` | Serial port and baud rate of the rotator arm. This must be a different port from the pump. |
+| `--pump_port`, `PUMP_ADDRESS` | Serial port of the pump, e.g. `/dev/ttyACM0`, `/dev/cu.usbmodem…` (macOS) or `COM3`. |
+| `--arm_port`, `SERIAL_PORT` | Serial port of the rotator arm (Arduino Nano). By default the Nano is found automatically: the first Arduino-like USB serial port that answers. |
+| `SERIAL_BAUD` | Baud rate of the rotator arm, 115200 (must match the sketch). |
 | `DB_PATH` | The database for presets and session logs, `data.db` next to `reglo_gui.py` by default. |
 | `DEFAULT_PRESETS` | The example presets put into a new, empty database. |
 
 The rotator arm's serial protocol is described in
-[`firmware/cuvette_rotator/`](../firmware/cuvette_rotator/).
+[`cuvette_rotater/`](../cuvette_rotater/).
 
 ## Using it
 

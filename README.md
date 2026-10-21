@@ -23,7 +23,7 @@ code/
 ├── src/
 │   ├── kawaii_gui/       # Main desktop GUI (pywebview + TypeScript) — start here
 │   ├── reglo_gui/        # Simpler Tkinter GUI for the Reglo pump + rotator
-│   └── cuvette_rotater/  # CircuitPython firmware for the cuvette rotator (Trinket M0)
+│   └── cuvette_rotater/  # Arduino firmware for the cuvette rotator (Nano)
 └── lib/
     └── ismatec-pump/     # Python driver for the Ismatec Reglo ICC pump (GPL-3)
 ```

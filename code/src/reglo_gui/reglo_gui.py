@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import sqlite3
+import sys
 import threading
 import tempfile
 import time
@@ -16,6 +17,7 @@ from tkinter import ttk, messagebox, filedialog
 from tkinter import font as tkfont
 
 import serial  # pip install pyserial
+from serial.tools import list_ports
 
 from dilution_controller import DilutionController
 from data_store import DataStore
@@ -35,6 +37,11 @@ def parse_args(argv=None):
                         help="use a mock pump instead of the real pump")
     parser.add_argument("--mock_arm", action="store_true",
                         help="use a mock arm instead of the real arm")
+    parser.add_argument("--pump_port", default=PUMP_ADDRESS,
+                        help=f"serial port of the pump (default {PUMP_ADDRESS})")
+    parser.add_argument("--arm_port", default=SERIAL_PORT,
+                        help="serial port of the rotator arm "
+                             "(default: find the Arduino Nano automatically)")
     return parser.parse_args(argv)
 
 # ---- Configuration ---------------------------------------------------------
@@ -49,6 +56,11 @@ STEP_TYPES = {"in": "Pump in", "out": "Pump out", "wait": "Wait"}
 STEP_KEYS = {label: key for key, label in STEP_TYPES.items()}
 
 LOCKED, UNLOCKED, REVERT = "\U0001F512", "\U0001F513", "\u21B6"   # button symbols
+DELETE, PLAY = "\U0001F5D1", "\u25b6"
+if sys.platform == "darwin":
+    # Tk on macOS crashes (bus error in CoreText/ImageIO) when it draws a
+    # colour emoji, so use plain text symbols there.
+    LOCKED, UNLOCKED, DELETE, PLAY = "\u25A0", "\u25A1", "\u2715", "\u25B8"
 RENAME = "\u270E"
 NO_SESSION_STATUS = "No session \u2014 press New session to start"
 PRESET_NAME_MAX = 40
@@ -74,12 +86,14 @@ BUTTON_BG = "#f6f8fa"
 PUMP_ADDRESS = "/dev/ttyACM0"
 
 # ---- Arduino arm configuration ----------------------------------------------
-SERIAL_PORT = "/dev/ttyACM1"
-SERIAL_BAUD = 9600        # must match Serial.begin(...) in the Arduino sketch
-ARM_BOOT_DELAY = 2.0      # Uno resets when the port opens; wait for it to boot
+# The arm is an Arduino Nano running ../cuvette_rotater/cuvette_rotater.ino.
+SERIAL_PORT = None        # None = find the Nano by USB ID, or e.g. "/dev/cu.usbserial-110"
+SERIAL_BAUD = 115200      # must match Serial.begin(...) in the Arduino sketch
+ARM_BOOT_TIMEOUT = 3.0    # the Nano restarts when the port opens, then says BOOTED
 ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
-ARM_DONE_REPLY = None     # text the Arduino sends when finished, e.g. "DONE".
-                          # None = any non-empty line counts as "done".
+# USB IDs a Nano (or clone) can show up with: (VID, PID), None = any PID
+ARM_USB_IDS = [(0x1A86, 0x7523), (0x1A86, 0x55D4), (0x0403, 0x6001),
+               (0x2341, None), (0x2A03, None)]
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
 # ---- Presets and session logs ---------------------------------------------------
 # Stored in an SQLite database next to this file. DEFAULT_PRESETS only seed an
@@ -154,38 +168,69 @@ class ArmError(Exception):
 
 
 class ArmController:
-    """Talks to the Arduino over serial. Commands: 'HOME' or an int 0-60.
-    Each command is sent as one line and we wait for the Arduino's reply
-    line before returning (blocking: call from a worker thread)."""
+    """Talks to the Arduino Nano over serial. Commands: 'HOME' or an int 0-60;
+    the Nano answers with <STATUS:...> lines and a final READY / MOVE_COMPLETE,
+    or an <ERROR:...> line. Blocking: call from a worker thread."""
 
-    def __init__(self, port, baud, done_reply, timeout):
-        self.port, self.baud = port, baud
-        self.done_reply, self.timeout = done_reply, timeout
+    def __init__(self, port, baud, timeout):
+        self.port, self.baud, self.timeout = port, baud, timeout
         self.ser = None
 
     def connect(self):
         if self.ser is not None and self.ser.is_open:
             return
-        try:
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.5)
-        except serial.SerialException as exc:
-            self.ser = None
-            raise ArmError(f"Could not open {self.port}:\n{exc}")
-        time.sleep(ARM_BOOT_DELAY)
+        if self.port is not None:
+            ports = [self.port]
+        else:
+            ports = [p.device for p in list_ports.comports()
+                     if any(p.vid == vid and (pid is None or p.pid == pid)
+                            for vid, pid in ARM_USB_IDS)]
+            if not ports:
+                raise ArmError("Rotator arm not found. Is the Arduino Nano "
+                               "plugged in? (Or pass --arm_port.)")
+        for port in ports:
+            try:
+                self.ser = serial.Serial(port, self.baud, timeout=0.2)
+            except serial.SerialException as exc:
+                self.ser = None
+                if self.port is not None:
+                    raise ArmError(f"Could not open {port}:\n{exc}")
+                continue
+            if self._handshake():
+                return
+            self.close()
+        raise ArmError(f"No rotator arm answered on {', '.join(ports)}.")
 
-    def _command(self, cmd):
+    def _handshake(self):
+        """True once the Nano says BOOTED (it restarts when the port opens)
+        or, if it didn't restart, answers PING."""
+        try:
+            if self._wait_for("<STATUS:BOOTED>", ARM_BOOT_TIMEOUT):
+                return True
+            self.ser.write(b"PING\n")
+            return self._wait_for("<STATUS:PONG>", 1.0)
+        except (serial.SerialException, ArmError):
+            return False
+
+    def _wait_for(self, reply, timeout):
+        """Read lines until `reply`; True if it came in time. An <ERROR:...>
+        line raises ArmError."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            line = self.ser.readline().decode("ascii", "ignore").strip()
+            if line == reply:
+                return True
+            if line.startswith("<ERROR"):
+                raise ArmError(f"The rotator arm reported {line}")
+        return False
+
+    def _command(self, cmd, done):
         try:
             self.ser.reset_input_buffer()           # drop stale output
             self.ser.write(f"{cmd}\n".encode("ascii"))
             self.ser.flush()
-            deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                line = self.ser.readline().decode("ascii", "ignore").strip()
-                if not line:
-                    continue
-                if (self.done_reply is None
-                        or self.done_reply.upper() in line.upper()):
-                    return
+            if self._wait_for(done, self.timeout):
+                return
         except serial.SerialException as exc:
             self.close()
             raise ArmError(f"Serial error while sending '{cmd}':\n{exc}")
@@ -193,13 +238,13 @@ class ArmController:
                        f"within {self.timeout:.0f} s.")
 
     def home(self):
-        self._command("HOME")
+        self._command("HOME", "<STATUS:READY>")
 
     def rotate(self, degrees):
         if not ARM_MIN_DEG <= degrees <= ARM_MAX_DEG:
             raise ArmError(f"Rotation {degrees} is outside "
                            f"{ARM_MIN_DEG}-{ARM_MAX_DEG} degrees.")
-        self._command(str(degrees))
+        self._command(str(degrees), "<STATUS:MOVE_COMPLETE>")
 
     def close(self):
         if self.ser is not None:
@@ -250,8 +295,7 @@ class App(tk.Tk):
         if MOCKARM:
             self.arm = ArmMock()
         else:
-            self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD,
-                                     ARM_DONE_REPLY, ARM_TIMEOUT)
+            self.arm = ArmController(SERIAL_PORT, SERIAL_BAUD, ARM_TIMEOUT)
         self.protocol("WM_DELETE_WINDOW", self.on_exit)
         self.bind_all("<Button-1>", self._on_click_anywhere, add="+")
 
@@ -602,7 +646,7 @@ class App(tk.Tk):
         self.run_btn = ttk.Button(side, text="Run cur. step", width=16,
                                   command=self.on_run_step, state="disabled")
         self.run_btn.pack(fill="x", ipady=4)
-        self.run_all_btn = ttk.Button(side, text="\u25b6  Run all", width=16,
+        self.run_all_btn = ttk.Button(side, text=f"{PLAY}  Run all", width=16,
                                       style="Accent.TButton",
                                       command=self.on_run_all, state="disabled")
         self.run_all_btn.pack(fill="x", pady=(8, 0), ipady=6)
@@ -656,7 +700,7 @@ class App(tk.Tk):
         self.cells.append(row_entries)
         wait = make_entry(self._num_cols - 1, data.get("seconds", ""))
         self.wait_cells.append(wait)
-        delete = ttk.Button(self.grid_frame, text="\U0001F5D1", width=3,
+        delete = ttk.Button(self.grid_frame, text=DELETE, width=3,
                             style="Danger.Icon.TButton",
                             command=lambda: self.on_delete_row(r))
         delete.grid(row=grid_row, column=self._num_cols, padx=(6, 2), pady=2)
@@ -741,7 +785,7 @@ class App(tk.Tk):
             if i < self.current_step:
                 text, bg, style = f"✓ #{i + 1}", DONE_BG, "Done.Row.Card.TLabel"
             elif i == self.current_step:
-                text, bg, style = (f"▶ #{i + 1}", ACCENT_SOFT,
+                text, bg, style = (f"{PLAY} #{i + 1}", ACCENT_SOFT,
                                    "Current.Row.Card.TLabel")
             else:
                 text, bg, style = f"#{i + 1}", CARD, "Row.Card.TLabel"
@@ -1631,6 +1675,8 @@ if __name__ == "__main__":
     DEBUGGING = args.enable_logging
     MOCKPUMP = args.mock_pump
     MOCKARM = args.mock_arm
+    PUMP_ADDRESS = args.pump_port
+    SERIAL_PORT = args.arm_port
     if DEBUGGING:
         logging.disable(logging.NOTSET)
         logging.basicConfig(level=logging.DEBUG, force=True)

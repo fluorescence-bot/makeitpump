@@ -1,11 +1,16 @@
 """
-USB-serial driver for the cuvette rotator (Adafruit Trinket M0 running
-firmware/cuvette_rotator/code.py).
+USB-serial driver for the cuvette rotator (Arduino Nano running
+../cuvette_rotater/cuvette_rotater.ino).
 
 Protocol (newline-terminated, replies are `<...>` lines):
-  HOME   -> <STATUS:HOMING> ... <STATUS:READY>
-  <int>  -> <STATUS:MOVING_TO_<deg>.0> ... <STATUS:MOVE_COMPLETE>   (0-60)
+  (boot) -> <STATUS:BOOTED>          the Nano restarts when the port is opened
+  PING   -> <STATUS:PONG>
+  HOME   -> <STATUS:HOMING> ... <STATUS:READY>   (or <ERROR:...>)
+  <int>  -> <STATUS:MOVING_TO_<deg>.0> ... <STATUS:MOVE_COMPLETE>   (0-60, or <ERROR:...>)
   <int> outside 0-60 -> <ERROR:OUT_OF_BOUNDS>
+
+Several serial ports can look like an Arduino (the pump can be a USB-serial
+adapter too), so connect() only uses a port once it has said BOOTED or PONG.
 
 A move can't be interrupted: the board finishes it even if we stop waiting, and
 its late reply may still be in the pipe when we send the next command. So each
@@ -15,16 +20,24 @@ accepts the matching done line; anything before that is a stale reply.
 
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import serial
 from serial.tools import list_ports
 
-VID, PID = 0x239A, 0x801F  # Adafruit Trinket M0
-PRODUCT = "Trinket M0"
+# USB IDs a Nano (or clone) can show up with: (VID, PID), None = any PID
+USB_IDS = [
+    (0x1A86, 0x7523),  # CH340 (most Nano clones)
+    (0x1A86, 0x55D4),  # CH9102
+    (0x0403, 0x6001),  # FTDI FT232R (older Nanos)
+    (0x2341, None),    # Arduino
+    (0x2A03, None),    # Arduino.org
+]
 MAX_DEG = 60
-BAUD = 115200  # ignored by USB CDC, but pyserial needs one
-HOME_TIMEOUT_S = 60.0  # worst case: a full sweep to find the switch
+BAUD = 115200  # must match Serial.begin() in the firmware
+BOOT_TIMEOUT_S = 3.0  # the Nano restarts when the port opens and says BOOTED
+PING_TIMEOUT_S = 1.0  # a board that didn't restart gets a PING instead
+HOME_TIMEOUT_S = 60.0  # worst case: a full turn to find the switch
 MOVE_TIMEOUT_S = 20.0
 
 
@@ -43,16 +56,16 @@ def rotate_error(deg) -> Optional[str]:
     return None
 
 
+def candidate_ports() -> List[str]:
+    """Serial ports whose USB ID could be the rotator's Nano, in order."""
+    return [p.device for p in list_ports.comports()
+            if any(p.vid == vid and (pid is None or p.pid == pid) for vid, pid in USB_IDS)]
+
+
 def find_port() -> Optional[str]:
-    """Serial port of the rotator board, by USB VID/PID (or product name), or None."""
-    ports = list(list_ports.comports())
-    for p in ports:
-        if p.vid == VID and p.pid == PID:
-            return p.device
-    for p in ports:
-        if p.product == PRODUCT:
-            return p.device
-    return None
+    """First serial port that could be the rotator, by USB ID, or None (not yet confirmed)."""
+    ports = candidate_ports()
+    return ports[0] if ports else None
 
 
 class Rotator:
@@ -70,17 +83,40 @@ class Rotator:
 
     def connect(self, should_cancel: Callable[[], bool] = lambda: False) -> str:
         """Find and open the board, then home it. Returns the port name."""
-        port = find_port()
-        if port is None:
-            raise RotatorError("Cuvette rotator not found (is the Trinket M0 plugged in?)")
+        ports = candidate_ports()
+        if not ports:
+            raise RotatorError("Cuvette rotator not found (is the Arduino Nano plugged in?)")
         self.close()
+        for port in ports:
+            try:
+                self._ser = serial.Serial(port, BAUD, timeout=0.1)
+            except serial.SerialException:
+                continue
+            self._buf = b""
+            if self._handshake():
+                self.home(should_cancel)
+                return port
+            self.close()
+        raise RotatorError(f"Cuvette rotator not found: no answer on {', '.join(ports)}")
+
+    def _handshake(self) -> bool:
+        """True once the board on the open port says BOOTED (it restarts when the
+        port opens) or, if it didn't restart, answers a PING."""
         try:
-            self._ser = serial.Serial(port, BAUD, timeout=0.1)
-        except serial.SerialException as e:
-            raise RotatorError(f"Can't open {port}: {e}")
-        self._buf = b""
-        self.home(should_cancel)
-        return port
+            deadline = time.monotonic() + BOOT_TIMEOUT_S
+            pinged = False
+            while True:
+                if time.monotonic() >= deadline:
+                    if pinged:
+                        return False
+                    self._ser.write(b"PING\r\n")
+                    pinged = True
+                    deadline = time.monotonic() + PING_TIMEOUT_S
+                line = self._readline()
+                if line in ("<STATUS:BOOTED>", "<STATUS:PONG>"):
+                    return True
+        except (serial.SerialException, OSError):
+            return False
 
     def close(self) -> None:
         if self._ser is not None:

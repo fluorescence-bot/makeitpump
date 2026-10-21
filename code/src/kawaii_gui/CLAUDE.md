@@ -78,7 +78,7 @@ sync) live on an asyncio loop in a daemon thread. The real pump is detected at `
 `tests/test_hardware.py` runs against that mock; `tests/test_api.py` monkeypatches `run_step`.
 
 **Cuvette rotator** (`rotator.py`): this is a USB-serial driver for
-the Trinket M0 that turns the cuvette 0–60° (firmware in `../firmware/cuvette_rotator/`). Rotate
+the Arduino Nano that turns the cuvette 0–60° (firmware in `../cuvette_rotater/`). Rotate
 blocks and `manual_rotate` wait for the board's `MOVE_COMPLETE`; replies are matched to their own
 command because a cancelled move's late reply can still be in the pipe. Tests use a fake board in
 `tests/test_rotator.py`. With the board plugged in, starting the app homes the motor.

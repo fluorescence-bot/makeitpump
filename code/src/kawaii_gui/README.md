@@ -133,7 +133,7 @@ code/src/kawaii_gui/
 ├── app.py              # Application entry point
 ├── api.py              # Backend API (exposed to JS)
 ├── hardware.py         # Pump control (ismatec library + DilutionController)
-├── rotator.py          # Cuvette rotator (Trinket M0 over USB serial)
+├── rotator.py          # Cuvette rotator (Arduino Nano over USB serial)
 ├── dilution_controller.py  # Copy of ../reglo_gui/dilution_controller.py
 ├── run.sh / run.ps1 / run.cmd  # One-shot setup + launch
 ├── tests/              # Python tests (pytest)

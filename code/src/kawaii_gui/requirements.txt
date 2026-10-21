@@ -2,7 +2,7 @@ pywebview>=5
 # Linux: Qt backend (QtPy + PyQt6 + WebEngine), used when GTK/WebKit isn't available.
 pywebview[qt]>=5; sys_platform == "linux"
 PyYAML>=6.0
-pyserial>=3.5   # cuvette rotator (Trinket M0 over USB serial)
+pyserial>=3.5   # cuvette rotator (Arduino Nano over USB serial)
 # Pump (Andreas' library, vendored in code/lib/ismatec-pump; same code as drivs/ismatec-pump v0.1.0).
 # Relative path: run pip/uv from code/src/kawaii_gui (the run scripts do).
 ../../lib/ismatec-pump

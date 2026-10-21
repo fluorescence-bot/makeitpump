@@ -12,9 +12,10 @@ which is then pumped out to a measuring instrument.
   controls the mixer. Has its own `CLAUDE.md` (commands, architecture) and `CONTRACT.md` (the
   frontend/backend interface spec) — read those before working there.
 - `code/src/reglo_gui/` — simpler Tkinter GUI for the pump + rotator.
-- `code/src/cuvette_rotater/` — CircuitPython `code.py` for the Trinket M0 that rotates the cuvette
-  (0–60°, USB serial); see its README for the serial protocol. The board's copy is the one that
-  runs — keep this in sync.
+- `code/src/cuvette_rotater/` — Arduino sketch `cuvette_rotater.ino` for the Nano (A4988 + NEMA 17)
+  that rotates the cuvette (0–60° from the calibrated 0°, USB serial), plus `calibrate.py` for
+  finding that 0°; see its README for the serial protocol. The board's copy is the one that runs —
+  keep this in sync.
 - `code/lib/ismatec-pump/` — vendored `ismatec-control` pump driver (GPL-3; the rest of the repo is MIT). Both GUIs install it
   from here via a relative path in their `requirements.txt`.
 

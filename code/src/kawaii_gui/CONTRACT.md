@@ -9,7 +9,7 @@ gui/
   app.py                # starts the pywebview window
   api.py                # Api class exposed to JS (js_api) + program runner thread
   hardware.py           # STUBS the backend team replaces (print + nothing else)
-  rotator.py            # real USB-serial driver for the cuvette rotator (Trinket M0)
+  rotator.py            # real USB-serial driver for the cuvette rotator (Arduino Nano)
   presets/example.yaml
   web/                  # Vite + TypeScript (vanilla, no framework)
     package.json, tsconfig.json, vite.config.ts (base: './')
@@ -302,7 +302,7 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 - `manual_dose(channel, ml)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
 
 ## Cuvette rotator
-A robot turns the cuvette (the "final solution" mug in the scene) to an absolute angle, **whole degrees 0–60**. It is an Adafruit Trinket M0 on USB serial running `firmware/cuvette_rotator/code.py` (protocol in its README). `rotator.py` finds it by USB VID `0x239a` / PID `0x801f` (falling back to product name `Trinket M0`), sends `HOME` on connect, and sends moves as plain integers.
+A robot turns the cuvette (the "final solution" mug in the scene) to an absolute angle, **whole degrees 0–60**. It is an Arduino Nano on USB serial running `../cuvette_rotater/cuvette_rotater.ino` (protocol in its README). `rotator.py` tries the serial ports with an Arduino-like USB ID (CH340, FTDI, Arduino) and uses the first one that says `<STATUS:BOOTED>` (the Nano restarts when the port opens) or answers `PING`, sends `HOME` on connect, and sends moves as plain integers.
 
 - Rotator state is pushed as `rotator` events: `disconnected` → `homing` → `ready`, and `moving` (with `target`) during a move. `deg` is the current angle (`null` until homed); `message` explains a failure.
 - `rotator_connect()`: find, open and home the board on a background thread; ignored while already connecting. The UI calls it at startup and when the robot is clicked while offline.

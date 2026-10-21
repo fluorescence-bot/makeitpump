@@ -14,14 +14,23 @@ pump, and a small robot rotates the cuvette (0–60°) for the measurement.
 
 Built for the course Digital Fabrication and Maker Space.
 
-## Download (Windows)
+## Download
 
-**[Download RainMixer.exe](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer.exe)**: the
-latest build of `main`, rebuilt automatically on every merge. Double-click it
-(Windows 10/11). Saved presets go in a `presets/` folder next to the exe. If
-SmartScreen warns, choose *More info → Run anyway*.
+Ready-to-run apps, rebuilt automatically from `main` on every merge (no Python or
+Node needed). Get them from the **Releases** box on the right of this page
+(*RainMixer (latest build)* → *Assets*), or directly:
 
-On macOS/Linux, run from source: `code/src/kawaii_gui/run.sh`.
+| Computer | Download | Then |
+|---|---|---|
+| Windows 10/11 | [RainMixer.exe](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer.exe) | Double-click it. If SmartScreen warns, choose *More info → Run anyway*. |
+| Mac, Apple silicon (M1 or newer) | [RainMixer-macOS-AppleSilicon.zip](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer-macOS-AppleSilicon.zip) | Open the zip, double-click *RainMixer*. The first time, macOS can't check the app: open *System Settings → Privacy & Security*, scroll down and click *Open Anyway*. |
+| Mac, Intel | [RainMixer-macOS-Intel.zip](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer-macOS-Intel.zip) | As above. |
+| Linux (x86-64) | [RainMixer-Linux.tar.gz](https://github.com/fluorescence-bot/rainmixer/releases/latest/download/RainMixer-Linux.tar.gz) | Extract it and run `RainMixer/RainMixer`. |
+
+Saved presets go in a `presets/` folder next to the app (Windows, Linux) or in
+`Documents/RainMixer/presets` (Mac). `RainMixer-debug.exe` is the Windows app with
+a console window that shows any error. To run from source instead:
+`code/src/kawaii_gui/run.sh`.
 
 ## Repository layout
 
@@ -38,8 +47,9 @@ code/
 ## CI
 
 - `.github/workflows/test.yml`: Python and TypeScript tests plus the frontend build, on pushes and PRs.
-- `.github/workflows/build-exe.yml`: builds `RainMixer.exe` with PyInstaller on
-  every push to `main` and replaces the `latest` release with it.
+- `.github/workflows/build-apps.yml`: builds the GUI for Windows, macOS and Linux
+  with PyInstaller, smoke-tests each, and on every push to `main` replaces the
+  `latest` release with them.
 
 ## License
 

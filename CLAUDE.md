@@ -25,7 +25,8 @@ which is then pumped out to a measuring instrument.
 
 ## CI
 
-`.github/workflows/build-exe.yml` builds a one-file Windows `RainMixer.exe` (PyInstaller, bundling
-`web/dist` and `presets`) on every push to `main` and publishes it as the rolling `latest`
-release. If you add runtime files the app reads via `resource_dir()`, add them to its
-`--add-data` list.
+`.github/workflows/build-apps.yml` builds the GUI with PyInstaller (bundling `web/dist` and
+`presets`) for Windows (`RainMixer.exe` + console `RainMixer-debug.exe`), macOS (`.app` zips for
+Apple silicon and Intel) and Linux (Qt, `.tar.gz`), starts each for 40 s as a smoke test, and on
+every push to `main` publishes them as the rolling `latest` release (PRs only build). If you add
+runtime files the app reads via `resource_dir()`, add them to every `--add-data` list there.

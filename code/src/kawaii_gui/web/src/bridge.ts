@@ -1,4 +1,4 @@
-import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpInfo, PumpSource, RotatorState, RunStatus, TubingInfo } from "./types";
+import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpInfo, PumpSource, RotatorState, RunStatus, SerialPort, TubingInfo } from "./types";
 import { pumpSeconds, rotate, rotateError } from "./flow";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
@@ -328,7 +328,11 @@ class MockBackend implements BackendApi {
     emitEvent({ type: "rotator", state: "ready", deg });
   }
 
-  async rotator_connect(): Promise<{ ok: boolean; error?: string }> {
+  async list_ports(): Promise<SerialPort[]> {
+    return [];
+  }
+
+  async rotator_connect(_port?: string | null): Promise<{ ok: boolean; error?: string }> {
     if (this.rotatorState === "homing") return { ok: true };
     this.rotatorState = "homing";
     emitEvent({ type: "rotator", state: "homing", deg: null });
@@ -424,7 +428,7 @@ class MockBackend implements BackendApi {
     return { ok: true, mode: "mock", address: null, message: "Demo mode - mock pump", logging: this.pumpLogging };
   }
 
-  async pump_connect(): Promise<PumpInfo> {
+  async pump_connect(_port?: string | null): Promise<PumpInfo> {
     if (this.running) return { ...this.pumpInfo(), ok: false, error: "Busy" };
     return this.pumpInfo();
   }

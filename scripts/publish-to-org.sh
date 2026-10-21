@@ -16,7 +16,7 @@
 set -euo pipefail
 
 SOURCE=https://github.com/alexandermittet/DIGIFAB.git
-TARGET=https://github.com/fluorescence-bot/makeitpump.git
+TARGET=https://github.com/fluorescence-bot/rainmixer.git
 BRANCH=main
 
 # Everything that goes public. Old roots (gui/, firmware/, reglo_gui/, ...) keep

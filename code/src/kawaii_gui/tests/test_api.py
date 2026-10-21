@@ -732,7 +732,7 @@ def test_set_tubing_refused_while_running(api_instance, fake_tubing):
 
 def test_pump_connect_refused_while_busy(api_instance, monkeypatch):
     called = []
-    monkeypatch.setattr(hardware, "connect", lambda: called.append(1) or hardware.info())
+    monkeypatch.setattr(hardware, "connect", lambda address=None: called.append(1) or hardware.info())
     api_instance.run_program([{"id": "p", "type": "pause", "s": 0.5}], 1)
     result = api_instance.pump_connect()
     api_instance.stop()
@@ -747,7 +747,7 @@ def test_pump_connect_ok(api_instance):
 
 
 def test_pump_connect_error(api_instance, monkeypatch):
-    def boom():
+    def boom(address=None):
         raise OSError("nope")
     monkeypatch.setattr(hardware, "connect", boom)
     result = api_instance.pump_connect()
@@ -759,3 +759,28 @@ def test_set_pump_logging(api_instance, monkeypatch):
     monkeypatch.setattr(hardware, "_logging", False)
     assert api_instance.set_pump_logging(True)["logging"] is True
     assert api_instance.set_pump_logging(False)["logging"] is False
+
+
+def test_pump_connect_on_a_chosen_port(api_instance, monkeypatch):
+    called = []
+    monkeypatch.setattr(hardware, "connect", lambda address=None: called.append(address) or hardware.info())
+    assert api_instance.pump_connect("COM5")["ok"]
+    assert api_instance.pump_connect(None)["ok"]
+    assert api_instance.pump_connect("")["ok"]
+    assert called == ["COM5", None, None]
+
+
+def test_pump_connect_refuses_the_rotator_port(api_instance, monkeypatch):
+    called = []
+    monkeypatch.setattr(hardware, "connect", lambda address=None: called.append(address) or hardware.info())
+    api_instance._rotator.port = "COM7"
+    result = api_instance.pump_connect("COM7")
+    assert not result["ok"] and "rotator" in result["error"] and called == []
+
+
+def test_list_ports(api_instance, monkeypatch):
+    ports = [{"device": "COM3", "description": "USB Serial Device"}]
+    monkeypatch.setattr(hardware, "usb_ports", lambda: ports)
+    assert api_instance.list_ports() == ports
+    monkeypatch.setattr(hardware, "usb_ports", lambda: 1 / 0)
+    assert api_instance.list_ports() == []

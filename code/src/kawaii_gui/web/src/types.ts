@@ -34,6 +34,12 @@ export interface PumpInfo {
   logging: boolean;           // ismatec debug logging on/off
 }
 
+// A USB serial port, for the port dropdowns. device: "COM4", "/dev/ttyACM0", "/dev/cu.usbmodem1101".
+export interface SerialPort {
+  device: string;
+  description: string;        // what the OS calls it, e.g. "USB-SERIAL CH340"
+}
+
 // Tubing inner diameter set on the pump. It sets the pump's max flow (and so how
 // fast a dose runs), so it must match the tube that is fitted.
 export interface TubingInfo {
@@ -61,9 +67,10 @@ export interface BackendApi {
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
-  rotator_connect(): Promise<{ ok: boolean; error?: string }>;              // find the board, open it, HOME (in the background)
+  list_ports(): Promise<SerialPort[]>;                                       // USB serial ports, sorted by device
+  rotator_connect(port?: string | null): Promise<{ ok: boolean; error?: string }>; // open the board on port (none: find it), HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
-  pump_connect(): Promise<PumpInfo>;                                         // (re)detect: real pump, else the mock; refused while busy
+  pump_connect(port?: string | null): Promise<PumpInfo>;                    // (re)detect on port (none: every port): real pump, else the mock; refused while busy
   set_pump_logging(on: boolean): Promise<PumpInfo>;                          // ismatec debug logging
   get_tubing(): Promise<TubingInfo>;
   set_tubing(mm: number): Promise<TubingInfo>;                              // every channel; refused while busy

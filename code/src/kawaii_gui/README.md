@@ -100,12 +100,18 @@ requirements.txt` from this directory.
 
 Settings at the top of `hardware.py`:
 
-- `FORCE_MOCK` - `False` (the default) looks for the real pump at
-  `PUMP_ADDRESS` and falls back to the library's mock pump if it isn't there
-  or doesn't answer (the app says so). `True` always uses the mock. Run
+- `FORCE_MOCK` - `False` (the default) looks for the real pump and falls
+  back to the library's mock pump if it isn't there or doesn't answer (the
+  app says so). `True` always uses the mock. Run
   `python app.py --pump-log` for the pump library's debug logging.
-- `PUMP_ADDRESS` - serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`
-  (not the cuvette rotator's port).
+- `PUMP_ADDRESS` - serial port of the pump, e.g. `/dev/ttyACM0` or `COM3`.
+  `None` (the default) tries every USB serial port except the cuvette
+  rotator and Arduino boards (`NOT_PUMP_VIDS`), so it works on Linux
+  (`/dev/ttyACM*`), macOS (`/dev/cu.usbmodem*`) and Windows (`COMx`) alike.
+- Port dropdowns: if auto-detection picks the wrong port, choose it by hand in
+  the dropdown next to **🔌 Redetect pump** (pump) or just above the 🤖
+  (cuvette rotator). "Auto port" goes back to detection. A chosen pump port
+  must still answer the pump, else the mock is used.
 - `FLOW_ML_PER_S` - estimated flow per channel, only used to estimate dose
   times (placeholder; keep in sync with `web/src/flow.ts`).
 

@@ -1,4 +1,7 @@
-.venv/
+.venv
+.venv.nosync/
 __pycache__/
-web/node_modules/
+web/node_modules
+web/node_modules.nosync/
 web/dist/
+settings.yaml

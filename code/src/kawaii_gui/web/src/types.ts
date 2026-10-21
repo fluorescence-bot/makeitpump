@@ -18,7 +18,7 @@ export interface Preset {
   repeat: number;                        // >= 1
 }
 
-export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" | "done" | "stopped" | "error";
+export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" | "flushing" | "cleaning" | "done" | "stopped" | "error";
 export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
@@ -51,6 +51,14 @@ export interface TubingInfo {
   max_ml_per_min: Partial<Record<Channel, number>>;    // calibrated max flow per channel; empty when unknown
 }
 
+// Length of each channel's tube in mm (null = not set yet). Flushing and cleaning
+// work out their volumes from it (flow.ts flushMl / cleanPlan).
+export interface TubeLengths {
+  ok: boolean;
+  error?: string;
+  mm: Record<Channel, number | null>;
+}
+
 // Events pushed from backend -> UI
 export type BackendEvent =
   | { type: "status"; status: RunStatus; message?: string }
@@ -59,6 +67,7 @@ export type BackendEvent =
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
   | { type: "dose_start"; channel: Channel; ml: number }                    // a manual click started
   | { type: "pumped"; channel: Channel; ml: number; source: PumpSource }     // mL actually delivered (pro-rata if stopped)
+  | { type: "flush_start"; volumes: Partial<Record<Channel, number>> }      // a flush started (never counted in the totals)
   | { type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }; // deg = current angle, null if unknown
 
 export interface BackendApi {
@@ -67,6 +76,10 @@ export interface BackendApi {
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
+  get_tube_lengths(): Promise<TubeLengths>;
+  set_tube_lengths(mm: Partial<Record<Channel, number | null>>): Promise<TubeLengths>; // saved in settings.yaml
+  flush(channels: Channel[]): Promise<{ ok: boolean; error?: string }>;     // fill + clear those tubes, in the background
+  clean(): Promise<{ ok: boolean; error?: string }>;                        // rinse every tube with water, in the background
   list_ports(): Promise<SerialPort[]>;                                       // USB serial ports, sorted by device
   rotator_connect(port?: string | null): Promise<{ ok: boolean; error?: string }>; // open the board on port (none: find it), HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose

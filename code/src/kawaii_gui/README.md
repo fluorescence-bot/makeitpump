@@ -131,6 +131,34 @@ into a per-channel (A-D) session log shown in the scene, with reset and
 copy-as-CSV. There is no standalone "Make it POUR!" button/API anymore —
 dosing is click-driven.
 
+## Flushing & Cleaning
+
+An empty tube has to fill up before any liquid comes out of its end, so the
+tubes are flushed before use. A flush pumps the tube's own volume plus 3.0 ml
+extra to clear it (`flush.py`):
+
+    tube volume (ml) = pi x (2.79 mm / 2)^2 x length (mm) / 1000
+    flush (ml)       = tube volume + 3.0
+
+For example a 304 mm tube holds 1.86 ml and is flushed with 4.86 ml. Flushes
+and cleans are **never counted**: they don't appear in the session log or the
+totals, which only hold the mixing.
+
+The **Tubes** row under Repeat × has:
+
+- **📏 Lengths**: the length of each channel's tube (mm), from the beaker (the
+  bowl for D) to its end. Saved in `settings.yaml` next to the app. The row
+  shows each channel's flush volume.
+- **🚿 Flush in**: flushes the liquids A–C the program uses. It first asks you
+  to move those outlets from the bowl to a waste cup, and when it's done it
+  reminds you to move them back.
+- **🚿 Flush out**: once the mixture is in the bowl, fills tube D with it
+  through the cuvette. The bowl must hold at least D's flush volume.
+- **🧼 Clean**: fill the beakers with water (it tells you how much) and leave
+  every outlet in its normal place. It rinses 3 rounds: A–C pump their flush
+  volume of water into the bowl, then D pumps it all out through the cuvette,
+  so the bowl never fills up. It says how long it takes before it starts.
+
 ## Project Structure
 
 ```
@@ -141,6 +169,7 @@ code/src/kawaii_gui/
 ├── hardware.py         # Pump control (ismatec library + DilutionController)
 ├── rotator.py          # Cuvette rotator (Arduino Nano over USB serial)
 ├── dilution_controller.py  # Copy of ../reglo_gui/dilution_controller.py
+├── flush.py            # Flush/clean volumes (copy of ../reglo_gui/flush.py)
 ├── run.sh / run.ps1 / run.cmd  # One-shot setup + launch
 ├── tests/              # Python tests (pytest)
 ├── presets/            # Preset programs (YAML)

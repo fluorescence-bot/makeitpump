@@ -136,6 +136,37 @@ the terminal, so the port listing is only visible without it.
    Finished steps are ticked and greyed out. During a wait, or the
    mixing pause, you can still edit the steps that come next.
 
+## Tubes: flushing and cleaning
+
+An empty tube has to fill up before any liquid comes out of its end, so the
+tubes are flushed before use. A flush pumps the tube's own volume plus 3.0 ml
+extra to clear it (`flush.py`):
+
+    tube volume (ml) = pi x (2.79 mm / 2)^2 x length (mm) / 1000
+    flush (ml)       = tube volume + 3.0
+
+For example a 304 mm tube holds 1.86 ml and is flushed with 4.86 ml. Flushes
+and cleans are **never counted**: they are not session steps and are not logged.
+
+The **Tubes** section on the right has:
+
+- **Tube lengths…**: the length of each channel's tube (mm), from the beaker
+  (the bowl for ch 4) to its end. Saved in the database, not per preset.
+  The section shows each channel's flush volume.
+- **Flush in (1-3)**: flushes the channels 1–3 that some Pump in step uses.
+  It first asks you to move those outlets from the bowl to a waste cup, and
+  when it's done it reminds you to move them back.
+- **Flush out (4)**: once the mixture is in the bowl, fills channel 4's tube
+  with it through the cuvette. The bowl must hold at least ch 4's flush volume.
+- **Clean…**: fill the beakers with water (it tells you how much) and leave
+  every outlet in its normal place. It rinses 3 rounds: ch 1–3 pump their
+  flush volume of water into the bowl, then ch 4 pumps it all out through the
+  cuvette, so the bowl never fills up. It estimates how long it takes.
+
+They don't need a session: without one, the pump is set up first with the
+loaded preset's tubing size and direction. **Stop after step** ends a clean
+after the pump step that is running.
+
 ## Sessions
 
 A session runs from **New session** until you start another one, load
@@ -200,6 +231,7 @@ The database has these tables:
 | `steps` | The steps of each preset, in order. |
 | `sessions` | One row per saved session: the header and footer. |
 | `session_steps` | The logged steps of each session: time, type, ml on ch 1–4, and seconds waited. |
+| `settings` | App settings that aren't part of a preset (the tube lengths), as JSON. |
 
 Preset values are stored as the text that was typed, so they load back
 exactly as entered.
@@ -208,8 +240,8 @@ exactly as entered.
 
 - `reglo_gui.py`: the GUI, the arm controller and the default presets.
 - `ports.py`: finds the serial ports of the pump and the arm.
-- `tests/`: tests for the port detection and the arm protocol
-  (`pip install pytest`, then `python -m pytest`).
+- `tests/`: tests for the port detection, the arm protocol and the
+  settings table (`pip install pytest`, then `python -m pytest`).
 - `data_store.py`: reads and writes presets and sessions in the SQLite
   database.
 - `session_log.py`: turns a saved session into a CSV file or a text log.
@@ -219,6 +251,8 @@ exactly as entered.
   icon.
 - `dilution_controller.py`: turns a step into pump commands for the
   `ismatec` library.
+- `flush.py`: flush and clean volumes from the tube lengths (copied
+  verbatim to `../kawaii_gui/flush.py`; keep the two the same).
 - `mock_gui.py`: an old command-line test script. It is out of date and
   no longer runs, because it uses `DilutionController` methods that were
   removed.

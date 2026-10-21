@@ -2,7 +2,8 @@
 **/.DS_Store
 oct_01_readings/
 readings/
-.venv/
+.venv
+*.nosync/
 .claude/worktrees/
 *.aux
 *.out

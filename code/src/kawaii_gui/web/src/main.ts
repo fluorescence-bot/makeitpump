@@ -6,12 +6,16 @@ import "@fontsource/noto-color-emoji/400.css";
 import "./styles.css";
 
 import { getApi, onEvent, isMock, programError } from "./bridge";
-import { pumpSeconds } from "./flow";
+import { cleanPlan, flushMl, pumpSeconds, tubeLengthError, FLUSH_EXCESS_ML, TUBE_INNER_DIAMETER_MM } from "./flow";
 import { createBlockEditor } from "./blocks";
 import { createScene } from "./scene";
 import { computeTotals } from "./totals";
 import { sessionCsv, sessionTotals, type LogEntry } from "./sessionlog";
 import type { BackendApi, BackendEvent, Preset, Channel, PumpInfo, RotatorState, RunStatus, SerialPort, TubingInfo } from "./types";
+
+const CHANNELS: Channel[] = ["A", "B", "C", "D"];
+// Statuses while something runs on the backend's runner (or is paused)
+const BUSY_STATUSES: RunStatus[] = ["raining", "dosing", "rotating", "flushing", "cleaning", "paused"];
 
 // Global state
 let api: BackendApi;
@@ -25,6 +29,10 @@ let currentPreset: Preset = {
 let isRunning = false;
 let currentStatus: RunStatus = "ready";
 let rotatorState: RotatorState = "disconnected";
+// Tube length per channel (mm), for flush volumes; null = not set yet
+let tubeLengths: Record<Channel, number | null> = { A: null, B: null, C: null, D: null };
+// Shown once the running flush/clean ends: what ran, and what to do next
+let afterService: { what: string; next: string } | null = null;
 // Everything pumped this session (manual clicks and program blocks), from `pumped` events
 const sessionLog: LogEntry[] = [];
 
@@ -89,6 +97,20 @@ async function init(): Promise<void> {
     </span>
   `;
   programPanel.appendChild(repeatControl);
+
+  // Tubes: an empty tube must fill before liquid comes out, so tubes are flushed
+  // before use (never counted in the totals), and can be rinsed with water
+  const flushControl = document.createElement("div");
+  flushControl.className = "flush-control";
+  flushControl.innerHTML = `
+    <label title="Fill the tubes before mixing: each pumps its own volume plus ${FLUSH_EXCESS_ML} mL. Not counted in the totals.">Tubes</label>
+    <button id="btn-tube-lengths" class="btn btn-small" title="Length of each channel's tube, for the flush volumes">📏 Lengths</button>
+    <button id="btn-flush-in" class="btn btn-small" title="Fill the tubes of the liquids this program uses (A-C), into a waste cup">🚿 Flush in</button>
+    <button id="btn-flush-out" class="btn btn-small" title="Fill tube D with the finished mixture, through the cuvette">🚿 Flush out</button>
+    <button id="btn-clean" class="btn btn-small" title="Rinse every tube with water from the beakers">🧼 Clean</button>
+    <span id="flush-info" class="tube-flow"></span>
+  `;
+  programPanel.appendChild(flushControl);
 
   const sessionPanel = document.createElement("div");
   sessionPanel.className = "session-log";
@@ -377,14 +399,14 @@ async function init(): Promise<void> {
     if (!result.ok) showStatusError(result.error || "Couldn't connect the cuvette rotator");
   };
   function updateRobotPort(): void {
-    robotPort.disabled = rotatorState === "moving" || ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+    robotPort.disabled = rotatorState === "moving" || BUSY_STATUSES.includes(currentStatus);
   }
 
   // Tubing: the pump's max flow, and so how fast every dose runs, follows the tube size set on it
   const tubeInput = document.getElementById("tube-input") as HTMLInputElement;
   let tubeMm: number | null = null;     // the pump's value, restored after a refused entry
   let tubeSetting = false;
-  const tubeLocked = () => tubeSetting || ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+  const tubeLocked = () => tubeSetting || BUSY_STATUSES.includes(currentStatus);
   function showTubing(t: TubingInfo): void {
     tubeInput.min = String(t.min_mm);
     tubeInput.max = String(t.max_mm);
@@ -429,7 +451,7 @@ async function init(): Promise<void> {
   const logBtn = document.getElementById("btn-pump-log") as HTMLButtonElement;
   let pumpLogging = false;
   let pumpBusy = false;
-  const pumpLocked = () => ["raining", "dosing", "rotating", "paused"].includes(currentStatus);
+  const pumpLocked = () => BUSY_STATUSES.includes(currentStatus);
   function updateRedetect(): void {
     redetectBtn.disabled = pumpPort.disabled = pumpBusy || pumpLocked();
     updateRobotPort();
@@ -471,6 +493,170 @@ async function init(): Promise<void> {
     if (!info.ok) showStatusError(info.error || "Couldn't change logging");
   };
   connectPump();
+
+  // -- Tubes: lengths, flushing and cleaning --------------------------------
+  const flushInBtn = document.getElementById("btn-flush-in") as HTMLButtonElement;
+  const flushOutBtn = document.getElementById("btn-flush-out") as HTMLButtonElement;
+  const cleanBtn = document.getElementById("btn-clean") as HTMLButtonElement;
+  const lengthsBtn = document.getElementById("btn-tube-lengths") as HTMLButtonElement;
+  const label = (ch: Channel) => `${ch} (${currentPreset.solutions[ch]})`;
+  const mlText = (ml: number) => `${ml.toFixed(2)} mL`;
+  function minutesText(seconds: number): string {
+    return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`;
+  }
+
+  // The liquids A-C the program pumps (a channel with mL > 0 in any pump block)
+  function usedSources(): Channel[] {
+    const blocks = blocksEditor.getBlocks();
+    return (["A", "B", "C"] as Channel[]).filter((ch) =>
+      blocks.some((b) => b.type === "pump" && (b.pumps[ch]?.ml ?? 0) > 0));
+  }
+
+  function updateFlushInfo(): void {
+    const info = document.getElementById("flush-info")!;
+    const missing = CHANNELS.filter((ch) => tubeLengths[ch] === null);
+    if (missing.length) {
+      info.textContent = `set the tube lengths (${missing.join(", ")})`;
+      info.title = "";
+      return;
+    }
+    info.textContent = "flush " + CHANNELS.map((ch) => `${ch} ${flushMl(tubeLengths[ch]!).toFixed(1)}`).join(" · ") + " mL";
+    info.title = CHANNELS.map((ch) => `${ch}: ${tubeLengths[ch]} mm tube = ${mlText(flushMl(tubeLengths[ch]!) - FLUSH_EXCESS_ML)} + ${FLUSH_EXCESS_ML} mL excess`).join("\n");
+  }
+
+  function updateFlushButtons(): void {
+    const busy = BUSY_STATUSES.includes(currentStatus);
+    for (const btn of [flushInBtn, flushOutBtn, cleanBtn, lengthsBtn]) btn.disabled = busy;
+  }
+
+  async function startService(call: Promise<{ ok: boolean; error?: string }>, note: { what: string; next: string } | null): Promise<void> {
+    const result = await call;
+    if (!result.ok) {
+      showStatusError(result.error || "Busy");
+      return;
+    }
+    afterService = note;
+  }
+
+  flushInBtn.onclick = async () => {
+    const chs = usedSources();
+    if (!chs.length) {
+      alert("This program doesn't pump any liquid A-C, so there is nothing to flush in.");
+      return;
+    }
+    const missing = chs.filter((ch) => tubeLengths[ch] === null);
+    if (missing.length) {
+      alert(`Set the tube length of ${missing.join(", ")} first (📏 Lengths).`);
+      return;
+    }
+    const lines = chs.map((ch) => `  ${label(ch)}: ${mlText(flushMl(tubeLengths[ch]!))}`).join("\n");
+    if (!confirm(`Flush the tubes of ${chs.join(", ")}.\n\nMove the outlets of ${chs.join(", ")} from the bowl to a waste cup now, then press OK.\n\nPumps:\n${lines}\n\n(Not counted in the totals.)`)) return;
+    await startService(api.flush(chs), { what: "Flush", next: `Move the outlets of ${chs.join(", ")} back into the bowl.` });
+  };
+
+  flushOutBtn.onclick = async () => {
+    if (tubeLengths.D === null) {
+      alert("Set the tube length of D first (📏 Lengths).");
+      return;
+    }
+    const ml = flushMl(tubeLengths.D);
+    if (!confirm(`Flush tube D with the finished mixture.\n\nPumps ${mlText(ml)} from the bowl through the cuvette, so the bowl must hold at least that much mixture.\n\n(Not counted in the totals.)`)) return;
+    await startService(api.flush(["D"]), null);
+  };
+
+  cleanBtn.onclick = async () => {
+    const missing = CHANNELS.filter((ch) => tubeLengths[ch] === null);
+    if (missing.length) {
+      alert(`Set the tube length of ${missing.join(", ")} first (📏 Lengths).`);
+      return;
+    }
+    const plan = cleanPlan(CHANNELS.map((ch) => tubeLengths[ch]!) as [number, number, number, number]);
+    const water = (["A", "B", "C"] as Channel[]).map((ch, i) => `  ${label(ch)}: ${Math.ceil(plan.waterMl[i])} mL`).join("\n");
+    if (!confirm(`Clean all tubes with water.\n\n1. Fill the beakers with at least:\n${water}\n2. Put every outlet in its normal place (A-C into the bowl).\n3. Make sure the cuvette's outlet goes to waste.\n\nIt rinses ${plan.steps.length / 2} rounds (A-C into the bowl, then D drains it) and takes about ${minutesText(plan.seconds)}.`)) return;
+    await startService(api.clean(), { what: "Cleaning", next: "Put the beakers with your liquids back before the next run." });
+  };
+
+  lengthsBtn.onclick = () => showTubeLengthsDialog();
+
+  function showTubeLengthsDialog(): void {
+    const overlay = document.createElement("div");
+    overlay.className = "save-dialog-overlay";
+    document.body.appendChild(overlay);
+    const dialog = document.createElement("div");
+    dialog.className = "save-dialog tube-dialog";
+    dialog.innerHTML = `
+      <h3>Tube lengths</h3>
+      <p class="tube-dialog-hint">From the beaker (or the bowl, for D) to the end of the tube, in mm. A flush pumps the tube's volume (⌀ ${TUBE_INNER_DIAMETER_MM} mm) plus ${FLUSH_EXCESS_ML} mL.</p>
+      ${CHANNELS.map((ch) => `
+        <label class="tube-row">
+          <span class="tube-name">${label(ch)}</span>
+          <input data-ch="${ch}" type="number" min="1" step="1" placeholder="mm">
+          <span class="unit">mm</span>
+          <span class="tube-ml" data-ml="${ch}"></span>
+        </label>`).join("")}
+      <div class="save-dialog-buttons">
+        <button class="btn-cancel">Cancel</button>
+        <button class="btn-save">Save</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    const inputs = [...dialog.querySelectorAll("input")] as HTMLInputElement[];
+    const showMl = () => {
+      for (const input of inputs) {
+        const out = dialog.querySelector(`[data-ml="${input.dataset.ch}"]`)!;
+        const mm = Number(input.value);
+        out.textContent = input.value.trim() && !tubeLengthError(mm) ? `= ${mlText(flushMl(mm))}` : "";
+      }
+    };
+    for (const input of inputs) {
+      const v = tubeLengths[input.dataset.ch as Channel];
+      input.value = v === null ? "" : String(v);
+      input.oninput = showMl;
+    }
+    showMl();
+    inputs[0].focus();
+
+    const close = () => {
+      overlay.remove();
+      dialog.remove();
+    };
+    (dialog.querySelector(".btn-cancel") as HTMLButtonElement).onclick = close;
+    (dialog.querySelector(".btn-save") as HTMLButtonElement).onclick = async () => {
+      const mm: Partial<Record<Channel, number | null>> = {};
+      for (const input of inputs) {
+        const ch = input.dataset.ch as Channel;
+        if (!input.value.trim()) {
+          mm[ch] = null;
+          continue;
+        }
+        const error = tubeLengthError(Number(input.value));
+        if (error) {
+          alert(`${ch}: ${error}`);
+          input.focus();
+          return;
+        }
+        mm[ch] = Number(input.value);
+      }
+      const result = await api.set_tube_lengths(mm);
+      tubeLengths = result.mm;
+      updateFlushInfo();
+      if (!result.ok) {
+        alert(result.error || "Couldn't save the tube lengths");
+        return;
+      }
+      close();
+    };
+    dialog.onkeydown = (e) => {
+      if (e.key === "Enter") (dialog.querySelector(".btn-save") as HTMLButtonElement).click();
+      if (e.key === "Escape") close();
+    };
+  }
+
+  api.get_tube_lengths().then((result) => {
+    tubeLengths = result.mm;
+    updateFlushInfo();
+  }).catch(console.error);
+  updateFlushInfo();
 
   // Control bar buttons
   document.getElementById("btn-rain")!.onclick = async () => {
@@ -530,6 +716,8 @@ async function init(): Promise<void> {
                                 status === "paused" ? "Paused" :
                                 status === "dosing" ? "Dosing..." :
                                 status === "rotating" ? "Rotating..." :
+                                status === "flushing" ? "Flushing..." :
+                                status === "cleaning" ? (event.message || "Cleaning...") :
                                 status === "done" ? "Done ✨" :
                                 status === "stopped" ? "Stopped" :
                                 status === "error" ? "Error" :
@@ -537,19 +725,20 @@ async function init(): Promise<void> {
 
       statusPill.className = `status-pill status-${status}`;
 
-      const running = status === "raining" || status === "dosing" || status === "rotating";
+      const running = ["raining", "dosing", "rotating", "flushing", "cleaning"].includes(status);
       const paused = status === "paused";
 
       rainBtn.disabled = running || paused;
       pauseBtn.textContent = paused ? "▶ Resume" : "⏸ Pause";
-      // A manual rotate can't be paused (the board finishes each move)
-      pauseBtn.disabled = (!running && !paused) || status === "rotating";
+      // A manual rotate (the board finishes each move), a flush or a clean can't be paused
+      pauseBtn.disabled = (!running && !paused) || ["rotating", "flushing", "cleaning"].includes(status);
       stopBtn.disabled = !running && !paused;
 
       blocksEditor.setLocked(running || paused);
       currentStatus = status;
       (document.getElementById("tube-input") as HTMLInputElement).disabled = tubeLocked();
       updateRedetect();
+      updateFlushButtons();
 
       if (paused) {
         scene.setPaused(true);
@@ -561,6 +750,14 @@ async function init(): Promise<void> {
         scene.stopAll();
         blocksEditor.highlight(null);
         isRunning = false;
+      }
+
+      // A flush or clean ended (or was stopped): tell what to do next
+      if (afterService && (status === "ready" || status === "stopped" || status === "error")) {
+        const leftover = afterService.what === "Cleaning" && status !== "ready" ? "The bowl may still hold rinse water. " : "";
+        const note = `${afterService.what} ${status === "ready" ? "done" : status}. ${leftover}${afterService.next}`;
+        afterService = null;
+        setTimeout(() => alert(note), 50);
       }
 
       if (event.message) {
@@ -594,6 +791,10 @@ async function init(): Promise<void> {
       const s = pumpSeconds(event.ml);
       if (event.channel === "D") scene.startPour(event.ml, s);
       else scene.startRain(event.channel, event.ml, s);
+    } else if (event.type === "flush_start") {
+      // Only D's flush is in the scene: it takes the mixture from the bowl. A-C flush into a waste cup.
+      const d = event.volumes.D;
+      if (d) scene.startPour(d, pumpSeconds(d));
     } else if (event.type === "pumped") {
       sessionLog.push({ time: new Date(), channel: event.channel, ml: event.ml, source: event.source });
       renderSessionLog();

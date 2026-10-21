@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import flush
 import hardware
 import rotator
 import webview
@@ -32,6 +33,9 @@ def pumps_error(pumps: Dict[str, Any]) -> Optional[str]:
         if float(p.get("ml", 0) or 0) < 0:
             return f"{ch}: negative mL"
     return None
+
+
+CHANNELS = ("A", "B", "C", "D")
 
 
 def resource_dir() -> Path:
@@ -413,6 +417,125 @@ class Api:
             self._runner_thread.start()
 
         return {"ok": True}
+
+    # -- Tube lengths, flushing and cleaning -----------------------------------
+
+    def _settings_path(self) -> Path:
+        """App settings (tube lengths): settings.yaml next to the app, or next to
+        the .exe when frozen, so they survive restarts."""
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).parent / "settings.yaml"
+        return Path(__file__).parent / "settings.yaml"
+
+    def _load_settings(self) -> Dict[str, Any]:
+        try:
+            with open(self._settings_path()) as f:
+                data = yaml.safe_load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, yaml.YAMLError):
+            return {}
+
+    def _tube_lengths(self) -> Dict[str, Optional[float]]:
+        """Tube length per channel in mm, None where it hasn't been set."""
+        saved = self._load_settings().get("tube_lengths_mm") or {}
+        lengths: Dict[str, Optional[float]] = {}
+        for ch in CHANNELS:
+            value = saved.get(ch)
+            lengths[ch] = float(value) if value is not None and flush.tube_length_error(value) is None else None
+        return lengths
+
+    def get_tube_lengths(self) -> Dict[str, Any]:
+        """The tube length (mm) of each channel, null where not set yet."""
+        return {"ok": True, "mm": self._tube_lengths()}
+
+    def set_tube_lengths(self, mm: Dict[str, Any]) -> Dict[str, Any]:
+        """Save the tube lengths (mm) of the channels given (null clears one)."""
+        lengths = self._tube_lengths()
+        for ch, value in (mm or {}).items():
+            if ch not in CHANNELS:
+                return {"ok": False, "error": f"Unknown channel {ch}", "mm": lengths}
+            if value is None or value == "":
+                lengths[ch] = None
+                continue
+            if isinstance(value, bool) or flush.tube_length_error(value):
+                return {"ok": False, "error": f"{ch}: {flush.tube_length_error(value) or 'not a number'}", "mm": lengths}
+            lengths[ch] = round(float(value), 1)
+        settings = self._load_settings()
+        settings["tube_lengths_mm"] = lengths
+        try:
+            with open(self._settings_path(), "w") as f:
+                yaml.safe_dump(settings, f, sort_keys=False)
+        except OSError as e:
+            return {"ok": False, "error": f"Couldn't save the settings: {e}", "mm": self._tube_lengths()}
+        return {"ok": True, "mm": lengths}
+
+    def _start_service(self, status: str, work: Any) -> Dict[str, Any]:
+        """Run `work()` on the runner thread with `status` (like manual_dose):
+        refused while anything else runs, Stop works, ends with status ready."""
+        with self._runner_lock:
+            if self._busy():
+                return {"ok": False, "error": "Busy"}
+            self._stop_event.clear()
+            self._pause_event.clear()
+            self._resume_event.clear()
+
+            def _impl() -> None:
+                try:
+                    self._active_status = status
+                    self._emit_event({"type": "status", "status": status})
+                    work()
+                    if not self._stop_event.is_set():
+                        self._emit_event({"type": "status", "status": "ready"})
+                except Exception as e:
+                    self._emit_event({"type": "status", "status": "error", "message": str(e)})
+                    hardware.stop_all()
+
+            self._runner_thread = threading.Thread(target=_impl, daemon=True)
+            self._runner_thread.start()
+        return {"ok": True}
+
+    def flush(self, channels: List[str]) -> Dict[str, Any]:
+        """Fill the tubes of `channels` and clear them: each pumps its tube's
+        volume plus flush.FLUSH_EXCESS_ML, all at once. Not counted in the totals
+        (no `pumped` events). Status `flushing`, then `ready`."""
+        channels = list(dict.fromkeys(channels or []))
+        if not channels:
+            return {"ok": False, "error": "No channels to flush"}
+        if any(ch not in CHANNELS for ch in channels):
+            return {"ok": False, "error": f"Unknown channel in {channels}"}
+        lengths = self._tube_lengths()
+        missing = [ch for ch in channels if lengths[ch] is None]
+        if missing:
+            return {"ok": False, "error": f"Set the tube length of {', '.join(missing)} first"}
+        volumes = {ch: flush.flush_ml(lengths[ch]) for ch in channels}
+
+        def work() -> None:
+            self._emit_event({"type": "flush_start", "volumes": volumes})
+            hardware.run_step(volumes)
+
+        return self._start_service("flushing", work)
+
+    def clean(self) -> Dict[str, Any]:
+        """Rinse every tube with water (flush.clean_plan): each round channels A-C
+        pump their flush volume into the bowl, then D pumps it all out through
+        the cuvette. Not counted in the totals. Status `cleaning` (its message
+        says which round), then `ready`."""
+        lengths = self._tube_lengths()
+        missing = [ch for ch in CHANNELS if lengths[ch] is None]
+        if missing:
+            return {"ok": False, "error": f"Set the tube length of {', '.join(missing)} first"}
+        plan = flush.clean_plan([lengths[ch] for ch in CHANNELS], hardware.FLOW_ML_PER_S)
+
+        def work() -> None:
+            for i, step in enumerate(plan["steps"]):
+                if self._stop_event.is_set():
+                    return
+                what = "rinsing A-C into the bowl" if i % 2 == 0 else "draining the bowl through D"
+                self._emit_event({"type": "status", "status": "cleaning",
+                                  "message": f"Round {i // 2 + 1}/{flush.CLEAN_ROUNDS}: {what}"})
+                hardware.run_step({ch: ml for ch, ml in zip(CHANNELS, step) if ml > 0})
+
+        return self._start_service("cleaning", work)
 
     def _tubing_result(self, tubing: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
         sizes = set(tubing["mm"].values())

@@ -20,9 +20,10 @@ A session is:
 plus, when loaded from the database, "saved_at" and "step_count" (footer).
 """
 
+import json
 import sqlite3
 
-SCHEMA_VERSION = 5   # bump and add a migration step in _migrate() on change
+SCHEMA_VERSION = 6   # bump and add a migration step in _migrate() on change
 
 # Each schema step is a list of single statements (not one string split on
 # ";", which would break on a ";" inside a comment).
@@ -80,6 +81,12 @@ _SCHEMA_V4 = ["ALTER TABLE presets ADD COLUMN tubing REAL NOT NULL DEFAULT 0.19"
 # direction: "clockwise" or "counterclockwise", for all pump channels.
 _SCHEMA_V5 = ["ALTER TABLE presets ADD COLUMN direction TEXT NOT NULL "
               "DEFAULT 'clockwise'"]
+# App settings that aren't part of a preset, e.g. the tube lengths.
+_SCHEMA_V6 = ["""
+CREATE TABLE settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL                      -- JSON
+)"""]
 
 
 class DataStore:
@@ -96,7 +103,7 @@ class DataStore:
                 f"program supports ({SCHEMA_VERSION}).")
         for target, statements in ((1, _SCHEMA_V1), (2, _SCHEMA_V2),
                                    (3, _SCHEMA_V3), (4, _SCHEMA_V4),
-                                   (5, _SCHEMA_V5)):
+                                   (5, _SCHEMA_V5), (6, _SCHEMA_V6)):
             if version < target:
                 with self.conn:
                     for statement in statements:
@@ -105,6 +112,20 @@ class DataStore:
 
     def close(self):
         self.conn.close()
+
+    def get_setting(self, key, default=None):
+        """A setting saved with set_setting, or `default`."""
+        row = self.conn.execute("SELECT value FROM settings WHERE key = ?",
+                                (key,)).fetchone()
+        return default if row is None else json.loads(row[0])
+
+    def set_setting(self, key, value):
+        """Save a setting (any JSON value)."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, json.dumps(value)))
 
     def is_empty(self):
         return self.conn.execute("SELECT COUNT(*) FROM presets").fetchone()[0] == 0

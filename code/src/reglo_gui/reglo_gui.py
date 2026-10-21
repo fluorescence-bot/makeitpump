@@ -18,6 +18,7 @@ from tkinter import font as tkfont
 
 import serial  # pip install pyserial
 
+import flush
 from dilution_controller import DilutionController
 from data_store import DataStore
 from ismatec.util import Rotation, Tubing
@@ -95,6 +96,9 @@ SERIAL_BAUD = 115200      # must match Serial.begin(...) in the Arduino sketch
 ARM_BOOT_TIMEOUT = 3.0    # the Nano restarts when the port opens, then says BOOTED
 ARM_TIMEOUT = 60.0        # max seconds to wait for the arm to finish a command
 ARM_MIN_DEG, ARM_MAX_DEG = 0, 60
+# Rough pump flow per channel, only to estimate how long a clean takes (the
+# pump itself runs at 90 % of its max flow, which follows the tubing size).
+ESTIMATED_FLOW_ML_PER_S = 1.0
 # ---- Presets and session logs ---------------------------------------------------
 # Stored in an SQLite database next to this file. DEFAULT_PRESETS only seed an
 # empty database (the first run); PRESETS is the in-memory copy, loaded from
@@ -313,6 +317,9 @@ class App(tk.Tk):
         self.bind_all("<Button-1>", self._on_click_anywhere, add="+")
 
         self.store = self._open_store()
+        # Tube length (mm) of channels 1-4, None = not set: for flush volumes
+        self.tube_lengths = self._load_tube_lengths()
+        self.servicing = False  # a flush or clean is running (not a step)
         first = next(iter(PRESETS))
         self.current_preset = tk.StringVar(value=first)
         self.chosen_preset = tk.StringVar(value=first)
@@ -670,6 +677,21 @@ class App(tk.Tk):
         ttk.Checkbutton(side, text="Duplicate current row\nto next row",
                         style="Card.TCheckbutton",
                         variable=self.duplicate_next).pack(anchor="w")
+        ttk.Separator(side).pack(fill="x", pady=10)
+        ttk.Label(side, text="Tubes", style="Heading.Card.TLabel").pack(
+            anchor="w")
+        self.flush_info = ttk.Label(side, text="", style="Muted.Card.TLabel",
+                                    wraplength=150, justify="left")
+        self.flush_info.pack(anchor="w", pady=(0, 8))
+        self.tube_btns = []
+        for text, command in [("Tube lengths\u2026", self.on_tube_lengths),
+                              ("Flush in (1-3)", self.on_flush_in),
+                              ("Flush out (4)", self.on_flush_out),
+                              ("Clean\u2026", self.on_clean)]:
+            btn = ttk.Button(side, text=text, width=16, command=command)
+            btn.pack(fill="x", pady=(0, 6))
+            self.tube_btns.append(btn)
+        self._update_flush_info()
 
     def _add_row(self, kind, data=None):
         """Append a step row of type `kind`, filled from a PRESETS row dict."""
@@ -859,7 +881,10 @@ class App(tk.Tk):
         for w in (self.run_btn, self.run_all_btn):
             w.configure(state="normal" if ok and not self.auto_run
                         else "disabled")
-        self.stop_btn.configure(state="normal" if self.auto_run else "disabled")
+        self.stop_btn.configure(state="normal" if self.auto_run or self.servicing
+                                else "disabled")
+        for btn in getattr(self, "tube_btns", []):
+            btn.configure(state="disabled" if self.busy else "normal")
         self._update_session_ui()
 
     def _can_run_current(self):
@@ -1650,6 +1675,229 @@ class App(tk.Tk):
         dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         if sessions:
             tree.focus_set()
+
+    # -- tubes: lengths, flushing and cleaning ---------------------------------
+    # An empty tube has to fill before liquid comes out of its end, so tubes are
+    # flushed before use: each pumps its own volume plus flush.FLUSH_EXCESS_ML.
+    # Flushes and cleans are not session steps, so they are never logged.
+    def _load_tube_lengths(self):
+        saved = self.store.get_setting("tube_lengths_mm", [None] * 4)
+        if not isinstance(saved, list) or len(saved) != 4:
+            return [None] * 4
+        return [float(v) if v is not None and flush.tube_length_error(v) is None
+                else None for v in saved]
+
+    def _update_flush_info(self):
+        missing = [str(ch) for ch, mm in enumerate(self.tube_lengths, start=1)
+                   if mm is None]
+        if missing:
+            text = f"Set the tube lengths of ch {', '.join(missing)}"
+        else:
+            text = "Flush (ml): " + ", ".join(
+                f"{ch}: {flush.flush_ml(mm):.2f}"
+                for ch, mm in enumerate(self.tube_lengths, start=1))
+        self.flush_info.configure(text=text)
+
+    def _used_inputs(self):
+        """Channels 1-3 that some Pump in step pumps (more than 0 ml)."""
+        used = set()
+        for i in range(self._num_steps()):
+            if self._row_type(i) != "in":
+                continue
+            for ch, value in enumerate(self._volume_values(i), start=1):
+                if is_number(value) and to_float(value) > 0:
+                    used.add(ch)
+        return sorted(used)
+
+    def _missing_lengths(self, channels):
+        missing = [str(ch) for ch in channels if self.tube_lengths[ch - 1] is None]
+        if missing:
+            messagebox.showwarning(
+                "Tube lengths", f"Set the tube length of ch {', '.join(missing)} "
+                "first (Tube lengths\u2026).", parent=self)
+        return bool(missing)
+
+    def on_tube_lengths(self):
+        """Dialog to set the length of each channel's tube."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Tube lengths")
+        dlg.transient(self)
+        dlg.configure(background=BG)
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, wraplength=360, justify="left", text=(
+            "Length of each channel's tube in mm, from the beaker (the bowl "
+            "for ch 4) to its end. A flush pumps the tube's volume "
+            f"(inner diameter {flush.TUBE_INNER_DIAMETER_MM} mm) plus "
+            f"{flush.FLUSH_EXCESS_ML} ml.")).grid(row=0, column=0, columnspan=4,
+                                                 sticky="w", pady=(0, 10))
+        vars_, labels = [], []
+        for ch in range(1, 5):
+            what = "output" if ch == 4 else "input"
+            ttk.Label(frame, text=f"Ch {ch} ({what}):").grid(row=ch, column=0,
+                                                            sticky="w")
+            mm = self.tube_lengths[ch - 1]
+            var = tk.StringVar(value="" if mm is None else f"{mm:g}")
+            entry = ttk.Entry(frame, textvariable=var, width=8, justify="center")
+            entry.grid(row=ch, column=1, padx=6, pady=2)
+            ttk.Label(frame, text="mm").grid(row=ch, column=2, sticky="w")
+            label = ttk.Label(frame, text="", width=12)
+            label.grid(row=ch, column=3, sticky="w", padx=(10, 0))
+            vars_.append(var)
+            labels.append(label)
+            if ch == 1:
+                entry.focus_set()
+
+        def show_ml(*_):
+            for var, label in zip(vars_, labels):
+                text = var.get().strip().replace(",", ".")
+                ok = text and flush.tube_length_error(text) is None
+                label.configure(text=f"= {flush.flush_ml(float(text)):.2f} ml"
+                                if ok else "")
+        for var in vars_:
+            var.trace_add("write", show_ml)
+        show_ml()
+
+        def save(_event=None):
+            lengths = []
+            for ch, var in enumerate(vars_, start=1):
+                text = var.get().strip().replace(",", ".")
+                if not text:
+                    lengths.append(None)
+                    continue
+                error = flush.tube_length_error(text)
+                if error:
+                    messagebox.showerror("Tube lengths", f"Ch {ch}: {error}",
+                                         parent=dlg)
+                    return
+                lengths.append(round(float(text), 1))
+            try:
+                self.store.set_setting("tube_lengths_mm", lengths)
+            except sqlite3.Error as exc:
+                messagebox.showerror("Tube lengths",
+                                     f"Could not save them:\n{exc}", parent=dlg)
+                return
+            self.tube_lengths = lengths
+            self._update_flush_info()
+            dlg.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, columnspan=4, sticky="e", pady=(12, 0))
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(
+            side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Save", style="Accent.TButton",
+                   command=save).pack(side="left")
+        dlg.bind("<Return>", save)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.grab_set()
+
+    def on_flush_in(self):
+        """Flush the input tubes the steps use (ch 1-3), into a waste cup."""
+        channels = self._used_inputs()
+        if not channels:
+            messagebox.showinfo("Flush in", "No Pump in step pumps channels 1-3, "
+                                "so there is nothing to flush.", parent=self)
+            return
+        if self._missing_lengths(channels):
+            return
+        names = ", ".join(map(str, channels))
+        step = tuple(flush.flush_ml(self.tube_lengths[ch - 1]) if ch in channels
+                     else 0.0 for ch in range(1, 4)) + (0.0,)
+        amounts = "\n".join(f"  Ch {ch}: {step[ch - 1]:.2f} ml" for ch in channels)
+        if not messagebox.askokcancel("Flush in", (
+                f"Flush the tubes of ch {names}.\n\nMove the outlets of ch {names} "
+                f"from the bowl to a waste cup now, then press OK.\n\nPumps:\n"
+                f"{amounts}\n\n(Not logged in the session.)"), parent=self):
+            return
+        self._run_service([step], lambda _i: f"Flushing ch {names}...", "Flush",
+                          f"Move the outlets of ch {names} back into the bowl.")
+
+    def on_flush_out(self):
+        """Flush the output tube (ch 4) with the finished mixture."""
+        if self._missing_lengths([4]):
+            return
+        ml = flush.flush_ml(self.tube_lengths[3])
+        if not messagebox.askokcancel("Flush out", (
+                f"Flush ch 4 with the finished mixture.\n\nPumps {ml:.2f} ml "
+                "from the bowl through the cuvette, so the bowl must hold at "
+                "least that much mixture.\n\n(Not logged in the session.)"),
+                parent=self):
+            return
+        self._run_service([(0.0, 0.0, 0.0, ml)], lambda _i: "Flushing ch 4...",
+                          "Flush", None)
+
+    def on_clean(self):
+        """Rinse every tube with water (flush.clean_plan)."""
+        if self._missing_lengths([1, 2, 3, 4]):
+            return
+        plan = flush.clean_plan(self.tube_lengths, ESTIMATED_FLOW_ML_PER_S)
+        water = "\n".join(f"  Ch {ch}: {math.ceil(ml)} ml"
+                          for ch, ml in enumerate(plan["water_ml"], start=1))
+        minutes = max(1, round(plan["seconds"] / 60))
+        if not messagebox.askokcancel("Clean", (
+                "Clean all tubes with water.\n\n1. Fill the beakers with at "
+                f"least:\n{water}\n2. Put every outlet in its normal place "
+                "(ch 1-3 into the bowl).\n3. Make sure the cuvette's outlet goes "
+                f"to waste.\n\nIt rinses {flush.CLEAN_ROUNDS} rounds (ch 1-3 into "
+                f"the bowl, then ch 4 drains it) and takes about {minutes} min."),
+                parent=self):
+            return
+
+        def label(i):
+            what = ("rinsing ch 1-3 into the bowl" if i % 2 == 0
+                    else "draining the bowl through ch 4")
+            return f"Cleaning, round {i // 2 + 1}/{flush.CLEAN_ROUNDS}: {what}..."
+        self._run_service(plan["steps"], label, "Cleaning",
+                          "Put the beakers with your liquids back before the "
+                          "next run.")
+
+    def _run_service(self, steps, label, what, note):
+        """Run pump `steps` one after another (a flush or clean). Not part of
+        the session. Stop after step ends it after the step that is running."""
+        self.servicing = True
+        self.stopping = False
+        self._set_busy(True)
+        self._service_step(steps, 0, label, what, note)
+
+    async def _service_pump_step(self, step):
+        if self.controller is None:
+            # No session yet: set up the pump the same way New session does
+            # (without the arm), with the loaded preset's tubing and direction.
+            if self.pump is None:
+                self._create_pump()
+            controller = DilutionController(self.pump)
+            await controller.setup()
+            await self._apply_pump_settings(float(self.tubing_var.get()),
+                                            self.direction_var.get())
+            self.controller = controller
+        await self.controller.run_step(step)
+
+    def _service_step(self, steps, i, label, what, note):
+        if i == len(steps) or (self.stopping and i > 0):
+            self._service_done(what, "done" if i == len(steps) else "stopped",
+                               note)
+            return
+        self.status.set(label(i) + self._stop_note())
+        self._submit(self._service_pump_step(tuple(steps[i])),
+                     lambda _r: self._service_step(steps, i + 1, label, what,
+                                                   note),
+                     lambda exc: self._service_failed(what, note, exc))
+
+    def _service_done(self, what, how, note):
+        self.servicing = self.stopping = False
+        self.status.set(f"{what} {how}")
+        self._set_busy(False)
+        if what == "Cleaning" and how == "stopped":
+            note = "The bowl may still hold rinse water. " + note
+        if note:
+            messagebox.showinfo(what, f"{what} {how}. {note}", parent=self)
+
+    def _service_failed(self, what, note, exc):
+        self.servicing = self.stopping = False
+        self.status.set(f"{what} failed")
+        self._set_busy(False)
+        messagebox.showerror(what, f"{what} failed:\n{exc}"
+                             + (f"\n\n{note}" if note else ""), parent=self)
 
     # -- run all: go through the steps without manual interaction -------------
     def on_run_all(self):

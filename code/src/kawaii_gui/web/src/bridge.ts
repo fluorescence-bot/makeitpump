@@ -1,5 +1,5 @@
-import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpInfo, PumpSource, RotatorState, RunStatus, SerialPort, TubingInfo } from "./types";
-import { pumpSeconds, rotate, rotateError } from "./flow";
+import type { BackendApi, BackendEvent, Block, Preset, Channel, ChannelPump, PumpInfo, PumpSource, RotatorState, RunStatus, SerialPort, TubeLengths, TubingInfo } from "./types";
+import { CLEAN_ROUNDS, cleanPlan, flushMl, pumpSeconds, rotate, rotateError, tubeLengthError } from "./flow";
 
 let listeners: ((e: BackendEvent) => void)[] = [];
 let mockMode = false;
@@ -186,6 +186,8 @@ export function programError(blocks: Block[], rotator: RotatorState): string | n
   if (blocks.some((b) => b.type === "rotate")) return rotatorUnavailable(rotator);
   return null;
 }
+
+const CHANNELS: Channel[] = ["A", "B", "C", "D"];
 
 // Tubing inner diameter range the pump accepts (ismatec.util.Tubing ends), any value in it
 export const TUBING_MIN_MM = 0.13;
@@ -415,6 +417,101 @@ class MockBackend implements BackendApi {
     })();
 
     return { ok: true };
+  }
+
+  // -- Tube lengths, flushing and cleaning (mirror api.py) -------------------
+
+  private tubeLengths(): Record<Channel, number | null> {
+    const lengths: Record<Channel, number | null> = { A: null, B: null, C: null, D: null };
+    try {
+      const saved = JSON.parse(localStorage.getItem("rainmixer_tube_lengths") || "{}");
+      for (const ch of CHANNELS) {
+        const v = saved[ch];
+        if (typeof v === "number" && tubeLengthError(v) === null) lengths[ch] = v;
+      }
+    } catch {
+      // nothing saved
+    }
+    return lengths;
+  }
+
+  async get_tube_lengths(): Promise<TubeLengths> {
+    return { ok: true, mm: this.tubeLengths() };
+  }
+
+  async set_tube_lengths(mm: Partial<Record<Channel, number | null>>): Promise<TubeLengths> {
+    const lengths = this.tubeLengths();
+    for (const [ch, value] of Object.entries(mm) as [Channel, number | null][]) {
+      if (!CHANNELS.includes(ch)) return { ok: false, error: `Unknown channel ${ch}`, mm: lengths };
+      if (value === null) {
+        lengths[ch] = null;
+        continue;
+      }
+      const error = tubeLengthError(value);
+      if (error) return { ok: false, error: `${ch}: ${error}`, mm: lengths };
+      lengths[ch] = Math.round(value * 10) / 10;
+    }
+    try {
+      localStorage.setItem("rainmixer_tube_lengths", JSON.stringify(lengths));
+    } catch (e) {
+      return { ok: false, error: `Couldn't save the settings: ${e}`, mm: this.tubeLengths() };
+    }
+    return { ok: true, mm: lengths };
+  }
+
+  // Mirrors Api._start_service: refused while busy, status `status`, then ready
+  private startService(status: RunStatus, work: () => Promise<void>): { ok: boolean; error?: string } {
+    if (this.running) return { ok: false, error: "Busy" };
+    this.running = true;
+    this.paused = false;
+    this.activeStatus = status;
+    emitEvent({ type: "status", status });
+    (async () => {
+      try {
+        await work();
+        if (this.running) emitEvent({ type: "status", status: "ready" });
+      } finally {
+        this.running = false;
+        this.paused = false;
+      }
+    })();
+    return { ok: true };
+  }
+
+  // Waits as long as the slowest channel of a pump step takes; Stop ends it early
+  private async waitPumpStep(volumes: number[]): Promise<void> {
+    const end = Date.now() + Math.max(0, ...volumes.map(pumpSeconds)) * 1000;
+    while (this.running && Date.now() < end) await new Promise(r => setTimeout(r, 50));
+  }
+
+  async flush(channels: Channel[]): Promise<{ ok: boolean; error?: string }> {
+    const chs = [...new Set(channels)];
+    if (!chs.length) return { ok: false, error: "No channels to flush" };
+    if (chs.some((ch) => !CHANNELS.includes(ch))) return { ok: false, error: `Unknown channel in ${chs}` };
+    const lengths = this.tubeLengths();
+    const missing = chs.filter((ch) => lengths[ch] === null);
+    if (missing.length) return { ok: false, error: `Set the tube length of ${missing.join(", ")} first` };
+    const volumes: Partial<Record<Channel, number>> = {};
+    for (const ch of chs) volumes[ch] = flushMl(lengths[ch]!);
+    return this.startService("flushing", async () => {
+      emitEvent({ type: "flush_start", volumes });
+      await this.waitPumpStep(Object.values(volumes));
+    });
+  }
+
+  async clean(): Promise<{ ok: boolean; error?: string }> {
+    const lengths = this.tubeLengths();
+    const missing = CHANNELS.filter((ch) => lengths[ch] === null);
+    if (missing.length) return { ok: false, error: `Set the tube length of ${missing.join(", ")} first` };
+    const plan = cleanPlan(CHANNELS.map((ch) => lengths[ch]!) as [number, number, number, number]);
+    return this.startService("cleaning", async () => {
+      for (let i = 0; i < plan.steps.length; i++) {
+        if (!this.running) return;
+        const what = i % 2 === 0 ? "rinsing A-C into the bowl" : "draining the bowl through D";
+        emitEvent({ type: "status", status: "cleaning", message: `Round ${Math.floor(i / 2) + 1}/${CLEAN_ROUNDS}: ${what}` });
+        await this.waitPumpStep(plan.steps[i]);
+      }
+    });
   }
 
   private tubingInfo(): TubingInfo {

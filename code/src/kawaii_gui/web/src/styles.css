@@ -568,6 +568,59 @@ html, body {
   color: var(--ink);
 }
 
+/* Tubes: lengths, flushing and cleaning */
+.flush-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #F8F6FF;
+  border-radius: 12px;
+}
+
+.flush-control label {
+  font-weight: 600;
+  color: var(--ink);
+  margin-right: 4px;
+}
+
+.flush-control .tube-flow {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tube-dialog {
+  max-width: 440px;
+}
+
+.tube-dialog-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.tube-dialog .tube-row {
+  display: grid;
+  grid-template-columns: 1fr 90px auto 80px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+
+.tube-dialog .tube-row input {
+  width: 90px;
+  margin-bottom: 0;
+  padding: 6px 8px;
+}
+
+.tube-dialog .unit,
+.tube-dialog .tube-ml {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Session log: what was pumped per channel this session */
 .session-log {
   display: flex;
@@ -704,6 +757,12 @@ html, body {
 
 .status-pill.status-dosing {
   background: #CDB8F5;
+  color: var(--ink);
+}
+
+.status-pill.status-flushing,
+.status-pill.status-cleaning {
+  background: #A8E8F0;
   color: var(--ink);
 }
 

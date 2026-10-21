@@ -83,6 +83,12 @@ blocks and `manual_rotate` wait for the board's `MOVE_COMPLETE`; replies are mat
 command because a cancelled move's late reply can still be in the pipe. Tests use a fake board in
 `tests/test_rotator.py`. With the board plugged in, starting the app homes the motor.
 
+**Flushing and cleaning** (`flush.py`, a verbatim copy of `../reglo_gui/flush.py` — keep it in sync;
+`tests/test_flush.py` checks): `flush(channels)` / `clean()` run on the runner thread like `manual_dose`
+(statuses `flushing` / `cleaning`) and never emit `pumped`, so they stay out of the totals. Volumes come
+from the tube lengths in `settings.yaml` (`get_tube_lengths` / `set_tube_lengths`); `flow.ts` mirrors the
+maths for the UI and the mock (`tests/test_contract_sync.py` checks the constants).
+
 **Presets** are YAML programs (`presets/*.yaml`): a name, per-channel solution labels,
 a list of blocks (pump or pause), and a repeat count. Loading an old preset that has a per-channel `s` (seconds)
 or `speed` drops those fields.

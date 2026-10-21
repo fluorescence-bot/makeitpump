@@ -10,6 +10,8 @@ gui/
   api.py                # Api class exposed to JS (js_api) + program runner thread
   hardware.py           # STUBS the backend team replaces (print + nothing else)
   rotator.py            # real USB-serial driver for the cuvette rotator (Arduino Nano)
+  flush.py              # flush/clean volumes from tube lengths (verbatim copy of ../reglo_gui/flush.py)
+  settings.yaml         # app settings written by set_tube_lengths (not in git)
   presets/example.yaml
   web/                  # Vite + TypeScript (vanilla, no framework)
     package.json, tsconfig.json, vite.config.ts (base: './')
@@ -17,7 +19,7 @@ gui/
     src/main.ts         # app wiring, layout, preset UI, controls, status
     src/types.ts        # shared types (below), copy verbatim
     src/bridge.ts       # talks to window.pywebview.api, falls back to an in-browser mock
-    src/flow.ts         # mL -> estimated seconds (flow.mlPerS) for animations, times and the mock
+    src/flow.ts         # mL -> estimated seconds (flow.mlPerS) for animations, times and the mock; flush volumes
     src/blocks.ts       # program block editor (SortableJS)
     src/scene.ts        # SVG cartoon scene (clouds A/B/C, bowl D, final cup)
     src/scene.css
@@ -44,13 +46,14 @@ Reaching the backend:
 Before the app connects, define `window.__onBackendEvent = (event) => {...}` at the global scope. The backend will call this with JSON objects matching `BackendEvent` (see types.ts below). Events are pushed, not polled: when something changes in the runner or hardware, you receive an event.
 
 **Event types:**
-- `{ type: "status"; status: RunStatus; message?: string }` — program/runner state changed (raining, paused, dosing, rotating, done, stopped, error, ready).
+- `{ type: "status"; status: RunStatus; message?: string }` — program/runner state changed (raining, paused, dosing, rotating, flushing, cleaning, done, stopped, error, ready).
 - `{ type: "block_start"; index: number; repeat: number; block: Block }` — about to run block `index` in repetition `repeat` (0-based).
 - `{ type: "block_end"; index: number; repeat: number }` — finished that block.
 - `{ type: "progress"; fraction: number }` — overall progress through the run, 0..1.
 - `{ type: "dose_start"; channel: Channel; ml: number }` — manual dose started (from a click or call).
 - `{ type: "pumped"; channel: Channel; ml: number; source: PumpSource }` — channel delivered `ml` (full or pro-rata if stopped); `source` is "program" or "manual".
 - `{ type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }` — rotator state changed (disconnected, homing, ready, moving, error), current angle, or target angle during a move.
+- `{ type: "flush_start"; volumes: Partial<Record<Channel, number>> }` — a flush started, with the mL each channel pumps (never counted: no `pumped` events follow).
 
 ### Conventions
 
@@ -64,11 +67,11 @@ Before the app connects, define `window.__onBackendEvent = (event) => {...}` at 
 - Tubing diameter: **millimetres, rounded to 0.01 mm** (e.g. 1.52).
 
 **Async vs sync calls:**
-- **Calls that return immediately (run in background):** `run_program`, `manual_dose`, `manual_rotate`, `rotator_connect`. Check status events to know when they finish.
-- **Calls that block until done:** `pump_connect`, `get_tubing`, `set_tubing`, `list_ports`. Wait for the Promise.
+- **Calls that return immediately (run in background):** `run_program`, `manual_dose`, `manual_rotate`, `rotator_connect`, `flush`, `clean`. Check status events to know when they finish.
+- **Calls that block until done:** `pump_connect`, `get_tubing`, `set_tubing`, `list_ports`, `get_tube_lengths`, `set_tube_lengths`. Wait for the Promise.
 - **All other calls:** `pause_run`, `resume_run`, `stop` (return immediately with a status flag).
 
-**Busy refusals:** Only one thing runs at a time (program, manual dose or manual rotate). While one runs, `manual_dose`, `manual_rotate`, `pump_connect` and `set_tubing` return `{ ok: false, error: "Busy" }`, and `run_program` returns `{ ok: false, error: "A program is already running" }`. Treat any `ok: false` as "refused, nothing happened" and show `error`. Wait for the run to finish (status `ready`, `done`, `stopped` or `error`) before trying again.
+**Busy refusals:** Only one thing runs at a time (program, manual dose, manual rotate, flush or clean). While one runs, `manual_dose`, `manual_rotate`, `flush`, `clean`, `pump_connect` and `set_tubing` return `{ ok: false, error: "Busy" }`, and `run_program` returns `{ ok: false, error: "A program is already running" }`. Treat any `ok: false` as "refused, nothing happened" and show `error`. Wait for the run to finish (status `ready`, `done`, `stopped` or `error`) before trying again.
 
 ### Minimal startup sequence
 
@@ -199,7 +202,7 @@ export interface Preset {
   repeat: number;                        // >= 1
 }
 
-export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" | "done" | "stopped" | "error";
+export type RunStatus = "ready" | "raining" | "paused" | "dosing" | "rotating" | "flushing" | "cleaning" | "done" | "stopped" | "error";
 export type RotatorState = "disconnected" | "homing" | "ready" | "moving" | "error";
 export type PumpSource = "program" | "manual";
 
@@ -232,6 +235,14 @@ export interface TubingInfo {
   max_ml_per_min: Partial<Record<Channel, number>>;    // calibrated max flow per channel; empty when unknown
 }
 
+// Length of each channel's tube in mm (null = not set yet). Flushing and cleaning
+// work out their volumes from it (flow.ts flushMl / cleanPlan).
+export interface TubeLengths {
+  ok: boolean;
+  error?: string;
+  mm: Record<Channel, number | null>;
+}
+
 // Events pushed from backend -> UI
 export type BackendEvent =
   | { type: "status"; status: RunStatus; message?: string }
@@ -240,6 +251,7 @@ export type BackendEvent =
   | { type: "progress"; fraction: number }                                  // 0..1 of whole run
   | { type: "dose_start"; channel: Channel; ml: number }                    // a manual click started
   | { type: "pumped"; channel: Channel; ml: number; source: PumpSource }     // mL actually delivered (pro-rata if stopped)
+  | { type: "flush_start"; volumes: Partial<Record<Channel, number>> }      // a flush started (never counted in the totals)
   | { type: "rotator"; state: RotatorState; deg: number | null; target?: number; message?: string }; // deg = current angle, null if unknown
 
 export interface BackendApi {
@@ -248,6 +260,10 @@ export interface BackendApi {
   resume_run(): Promise<{ ok: boolean }>;
   stop(): Promise<{ ok: boolean }>;
   manual_dose(channel: Channel, ml: number): Promise<{ ok: boolean; error?: string }>;
+  get_tube_lengths(): Promise<TubeLengths>;
+  set_tube_lengths(mm: Partial<Record<Channel, number | null>>): Promise<TubeLengths>; // saved in settings.yaml
+  flush(channels: Channel[]): Promise<{ ok: boolean; error?: string }>;     // fill + clear those tubes, in the background
+  clean(): Promise<{ ok: boolean; error?: string }>;                        // rinse every tube with water, in the background
   list_ports(): Promise<SerialPort[]>;                                       // USB serial ports, sorted by device
   rotator_connect(port?: string | null): Promise<{ ok: boolean; error?: string }>; // open the board on port (none: find it), HOME (in the background)
   manual_rotate(deg: number): Promise<{ ok: boolean; error?: string }>;     // one manual rotate, like manual_dose
@@ -311,6 +327,14 @@ The mock mirrors the Python runner using timers, emits the same events, and keep
 - Stop: `hardware.stop_all()` (cancels the step and stops every channel), status `stopped`.
 - Every pump block (program or manual) ends by emitting one `pumped` event per active channel with delivered mL > 0. A finished block reports the full `ml`. A stopped block reports an estimate, `ml * min(elapsed, s) / s`, where `s` is that channel's estimated time and `elapsed` the time the block ran. `source` is `program` or `manual`.
 - `manual_dose(channel, ml)`: one manual click. Refused (`ok: false`) while anything else is running. Otherwise runs a single-channel pump block on the runner thread: status `dosing`, `dose_start`, the block (which emits `pumped` with source `manual`), then status `ready`. Stop works as for a program.
+
+## Flushing and cleaning
+An empty tube has to fill before any liquid comes out of its end, so tubes are flushed before use. Volumes come from `flush.py` (mirrored in `flow.ts`; `tests/test_contract_sync.py` checks the constants): tube volume = π·(2.79 mm / 2)²·length / 1000 mL, flush = tube volume + 3.0 mL. **Flushes and cleans are never counted**: they emit no `pumped` events, so the session log and totals only hold the mixing.
+
+- `get_tube_lengths()` / `set_tube_lengths(mm)`: the length of each channel's tube in mm (`TubeLengths`, `null` = not set), saved in `settings.yaml` next to the app (next to the .exe when frozen). `set_tube_lengths` takes only the channels to change (`null` clears one) and refuses a length that isn't > 0 and ≤ 10000 mm (`ok: false`, the lengths unchanged). The mock keeps them in localStorage.
+- `flush(channels)`: like `manual_dose`, on the runner thread: status `flushing`, `flush_start` with each channel's flush volume, one pump step with all of them at once, then status `ready`. Refused while busy, for no/unknown channels, or while a channel's tube length isn't set (`"Set the tube length of B first"`). Can't be paused; Stop works as for a program.
+- `clean()`: rinses every tube with water from the beakers, on the runner thread with status `cleaning`. `flush.CLEAN_ROUNDS` (3) rounds of two pump steps: A–C each pump their flush volume into the bowl, then D pumps all of that plus its own flush volume out through the cuvette (so the bowl holds at most one round). Before each step a `cleaning` status repeats with `message` "Round r/3: rinsing A-C into the bowl" / "…: draining the bowl through D". Then status `ready`. Needs all four tube lengths. Can't be paused; Stop ends it after the current step is cancelled.
+- **UI:** a Tubes row under Repeat × with 📏 Lengths (dialog: a length per channel, showing its flush volume), 🚿 Flush in, 🚿 Flush out and 🧼 Clean, and the flush volume per channel. *Flush in* flushes the liquids A–C the program uses (mL > 0 in any pump block): it first asks to move those outlets to a waste cup, and afterwards (also after a Stop) reminds to move them back into the bowl. *Flush out* flushes D with the finished mixture through the cuvette (the bowl must hold at least its flush volume). *Clean* first says how much water each beaker needs and how long it takes (`cleanPlan`). All four buttons are disabled while anything runs. Only D's flush is animated in the scene (the bowl pours out); A–C flush into a waste cup.
 
 ## Cuvette rotator
 A robot turns the cuvette (the "final solution" mug in the scene) to an absolute angle, **whole degrees 0–60**. It is an Arduino Nano on USB serial running `../cuvette_rotater/cuvette_rotater.ino` (protocol in its README). `rotator.py` tries the serial ports with an Arduino-like USB ID (CH340, FTDI, Arduino) and uses the first one that says `<STATUS:BOOTED>` (the Nano restarts when the port opens) or answers `PING`, sends `HOME` on connect, and sends moves as plain integers.

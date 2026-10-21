@@ -68,6 +68,6 @@ if $dry_run; then
 fi
 
 say "Pushing to $TARGET ($BRANCH)"
-git push "${push_flags[@]}" "$TARGET" "$BRANCH:$BRANCH" \
+git push ${push_flags[@]+"${push_flags[@]}"} "$TARGET" "$BRANCH:$BRANCH" \
     || die "Push rejected. If the org repo has unrelated history (e.g. its initial commit), re-run with --force."
 say "Done: ${TARGET%.git}"
